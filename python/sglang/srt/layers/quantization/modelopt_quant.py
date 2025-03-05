@@ -1,6 +1,7 @@
 # Adapted from https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/modelopt.py
 
 import logging
+import sys
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -12,6 +13,7 @@ from sglang.srt.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
 )
+
 from sglang.srt.layers.quantization.fp8_utils import (
     apply_fp8_linear,
     cutlass_fp8_supported,
@@ -22,7 +24,7 @@ from sglang.srt.layers.quantization.utils import (
     requantize_with_max_scale,
 )
 from sglang.srt.layers.radix_attention import RadixAttention
-from sglang.srt.utils import is_cuda_available
+from sglang.srt.utils import is_cuda_available, get_device_capability
 
 if is_cuda_available():
     from sgl_kernel import cutlass_scaled_fp4_mm, scaled_fp4_quant
@@ -65,7 +67,20 @@ class ModelOptFp8Config(QuantizationConfig):
 
     @classmethod
     def get_min_capability(cls) -> int:
-        return 89  # Minimum hardware capability (e.g., Hopper GPUs).
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return 89
+
+        # Vendors can update
+        return sys.maxsize
+
+    @classmethod
+    def get_availability(cls) -> bool:
+        major, minor = get_device_capability()
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return major * 10 + minor > 89
+
+        # Vendors can update
+        return False
 
     @classmethod
     def get_config_filenames(cls) -> List[str]:

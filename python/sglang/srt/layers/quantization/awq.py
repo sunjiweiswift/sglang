@@ -3,7 +3,6 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import torch
-from sgl_kernel import awq_dequantize
 
 from sglang.srt.layers.linear import (
     LinearBase,
@@ -12,6 +11,7 @@ from sglang.srt.layers.linear import (
 )
 from sglang.srt.layers.parameter import GroupQuantScaleParameter, PackedvLLMParameter
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.utils import is_cuda
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,12 @@ class AWQLinearMethod(LinearMethodBase):
         out_shape = x.shape[:-1] + (qweight.shape[-1] * pack_factor,)
         reshaped_x = x.reshape(-1, x.shape[-1])
 
-        out = awq_dequantize(qweight, scales, qzeros)
+        if is_cuda():
+            from sgl_kernel import awq_dequantize
+
+            out = awq_dequantize(qweight, scales, qzeros)
+        else:
+            out = torch.zeros_like(qweight)
         out = torch.matmul(reshaped_x, out)
 
         if bias is not None:

@@ -16,7 +16,8 @@ from sglang.srt.layers.quantization.fp8_utils import (
     input_to_float8,
     normalize_e4m3fn_to_e4m3fnuz,
 )
-from sglang.srt.utils import is_hip, set_weight_attrs
+
+from sglang.srt.utils import get_device_capability, is_hip, set_weight_attrs
 
 _is_hip = is_hip()
 
@@ -49,7 +50,20 @@ class W8A8Fp8Config(QuantizationConfig):
 
     @classmethod
     def get_min_capability(cls) -> int:
-        return 89
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return 89
+
+        # Vendors can update
+        return sys.maxsize
+
+    @classmethod
+    def get_availability(cls) -> bool:
+        major, minor = get_device_capability()
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return major * 10 + minor > 89
+
+        # Vendors can update
+        return False
 
     @classmethod
     def get_name(self) -> str:

@@ -1,4 +1,5 @@
 import logging
+import sys
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Union
 
@@ -6,7 +7,7 @@ import torch
 
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.utils import is_cuda
+from sglang.srt.utils import get_device_capability, is_cuda
 
 _is_cuda = is_cuda()
 
@@ -115,7 +116,20 @@ class GPTQConfig(QuantizationConfig):
     @classmethod
     # Need to figure it out
     def get_min_capability(cls) -> int:
-        return 60
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return 60
+
+        # Vendors can update
+        return sys.maxsize
+
+    @classmethod
+    def get_availability(cls) -> bool:
+        major, minor = get_device_capability()
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return major * 10 + minor > 60
+
+        # Vendors can update
+        return False
 
     @classmethod
     def get_config_filenames(cls) -> List[str]:
@@ -234,7 +248,20 @@ class GPTQMarlinConfig(QuantizationConfig):
 
     @classmethod
     def get_min_capability(cls) -> int:
-        return 80
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return 80
+
+        # Vendors can update
+        return sys.maxsize
+
+    @classmethod
+    def get_availability(cls) -> bool:
+        major, minor = get_device_capability()
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return major * 10 + minor > 80
+
+        # Vendors can update
+        return False
 
     @classmethod
     def get_config_filenames(cls) -> List[str]:
@@ -387,7 +414,20 @@ class MarlinConfig(QuantizationConfig):
     @classmethod
     # Need to figure it out
     def get_min_capability(cls) -> int:
-        return 80
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return 80
+
+        # Vendors can update
+        return sys.maxsize
+
+    @classmethod
+    def get_availability(cls) -> bool:
+        major, minor = get_device_capability()
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            return major * 10 + minor > 80
+
+        # Vendors can update
+        return False
 
     @classmethod
     def get_config_filenames(cls) -> List[str]:

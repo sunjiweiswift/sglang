@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 import torch
 
-from sglang.srt.utils import get_bool_env_var, is_hip, is_hpu
+from sglang.srt.utils import get_bool_env_var, is_cuda, is_hip, is_hpu
 
 logger = logging.getLogger(__name__)
 use_vllm_custom_allreduce = get_bool_env_var(
@@ -25,7 +25,7 @@ if not is_hpu():
             logger.warning("Failed to import from custom_ar with %r", e)
 
 
-if not is_hip():
+if is_cuda() or is_hpu():
     if use_vllm_custom_allreduce:
         custom_op = torch.ops._C_custom_ar
     else:
@@ -66,7 +66,7 @@ if not is_hip():
     ) -> None:
         custom_op.register_graph_buffers(fa, handles, offsets)
 
-else:
+elif is_hip():
     # ROCM custom allreduce
 
     def init_custom_ar(

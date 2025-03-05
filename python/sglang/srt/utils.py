@@ -190,6 +190,14 @@ class DynamicGradMode(_DecoratorContextManager):
         else:
             return self.__class__()
 
+            
+def is_triton_available():
+    if is_cuda() or is_xpu() or is_hip():
+        return get_bool_env_var("TRITON_AVAILABLE", default="true")
+    else:
+        # update once CPU/HPU supports triton
+        return False
+
 
 def enable_show_time_cost():
     global show_time_cost
@@ -1309,6 +1317,7 @@ def get_device_capability(device_id: int = 0) -> Tuple[int, int]:
     major, minor = None, None
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         major, minor = torch.cuda.get_device_capability(device_id)
+        assert 0 <= minor < 10
 
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         major, minor, *_ = torch.xpu.get_device_capability(device_id)["version"].split(
@@ -1380,7 +1389,10 @@ def direct_register_custom_op(
 
     my_lib = target_lib or sglang_lib
     my_lib.define(op_name + schema_str)
-    my_lib.impl(op_name, op_func, "CUDA")
+    if is_cuda():
+        my_lib.impl(op_name, op_func, "CUDA")
+    else:
+        my_lib.impl(op_name, op_func, "XPU")
     if fake_impl is not None:
         my_lib._register_fake(op_name, fake_impl)
 
