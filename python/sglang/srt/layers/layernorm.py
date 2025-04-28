@@ -139,8 +139,8 @@ class Gemma3RMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.eps}"
 
 
-if not _is_cuda:
-    logger.info(
-        "sgl-kernel is not available on Non-NV platforms. Fallback to other kernel libraries."
-    )
-    from vllm.model_executor.layers.layernorm import GemmaRMSNorm, RMSNorm
+# if not _is_cuda:
+#     logger.info(
+#         "sgl-kernel is not available on Non-NV platforms. Fallback to other kernel libraries."
+#     )
+#     from vllm.model_executor.layers.layernorm import GemmaRMSNorm, RMSNorm
