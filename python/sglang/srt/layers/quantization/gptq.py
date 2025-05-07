@@ -3,13 +3,46 @@ from fractions import Fraction
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from vllm.scalar_type import scalar_types
 
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
-from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+from sglang.srt.utils import is_cuda
+
+_is_cuda = is_cuda()
+
+try:
+    from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
+    from vllm.model_executor.layers.quantization.gptq import GPTQLinearMethod
+    from vllm.model_executor.layers.quantization.gptq_marlin import (
+        GPTQMarlinLinearMethod,
+        GPTQMarlinMoEMethod,
+    )
+    from vllm.model_executor.layers.quantization.marlin import MarlinLinearMethod
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+        check_marlin_supported,
+    )
+    from vllm.scalar_type import scalar_types
+
+    VLLM_AVAILABLE = True
+except ImportError:
+    VLLM_AVAILABLE = False
+
+    GPTQLinearMethod = MarlinLinearMethod = QuantizeMethodBase = Any
+
+    class scalar_types:
+        uint4b8 = "uint4b8"
+        uint8b128 = "uint8b128"
+
 
 logger = logging.getLogger(__name__)
+
+
+def check_marlin_format(hf_quant_cfg: Dict[str, Any]) -> bool:
+    # compat: gptqmodel and autogptq (eol) main use checkpoint_format: str
+    # compat: autogptq <=0.7.1 is_marlin_format: bool
+    return hf_quant_cfg.get("checkpoint_format") == "marlin" or hf_quant_cfg.get(
+        "is_marlin_format", False
+    )
 
 
 class GPTQConfig(QuantizationConfig):
@@ -109,9 +142,8 @@ class GPTQConfig(QuantizationConfig):
 
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
-    ) -> Optional["GPTQLinearMethod"]:
-        from vllm.model_executor.layers.quantization.gptq import GPTQLinearMethod
-
+    ) -> Optional[GPTQLinearMethod]:
+        # Delay the import to avoid circular dependency
         from sglang.srt.layers.quantization import get_linear_quant_method
 
         return get_linear_quant_method(self, layer, prefix, GPTQLinearMethod)
@@ -181,6 +213,7 @@ class GPTQMarlinConfig(QuantizationConfig):
                 "Unsupported quantization config: " f"bits={weight_bits}, sym={is_sym}"
             )
 
+        # (num_bits, is_sym) -> quant_type
         self.quant_type = self.TYPE_MAP[(weight_bits, is_sym)]
 
     def __repr__(self) -> str:
@@ -237,13 +270,15 @@ class GPTQMarlinConfig(QuantizationConfig):
 
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg, user_quant) -> Optional[str]:
+        is_marlin_format = check_marlin_format(hf_quant_cfg)
+
         can_convert = cls.is_gptq_marlin_compatible(hf_quant_cfg)
 
         is_valid_user_quant = (
             user_quant is None or user_quant == "marlin" or user_quant == "gptq_marlin"
         )
 
-        if can_convert and is_valid_user_quant:
+        if not is_marlin_format and can_convert and is_valid_user_quant:
             msg = (
                 "The model is convertible to {} during runtime."
                 " Using {} kernel.".format(cls.get_name(), cls.get_name())
@@ -251,7 +286,7 @@ class GPTQMarlinConfig(QuantizationConfig):
             logger.info(msg)
             return cls.get_name()
 
-        if can_convert and user_quant == "gptq":
+        if not is_marlin_format and can_convert and user_quant == "gptq":
             logger.info(
                 "Detected that the model can run with gptq_marlin"
                 ", however you specified quantization=gptq explicitly,"
@@ -262,12 +297,8 @@ class GPTQMarlinConfig(QuantizationConfig):
 
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
-    ) -> Optional["QuantizeMethodBase"]:
-        from vllm.model_executor.layers.quantization.gptq_marlin import (
-            GPTQMarlinLinearMethod,
-            GPTQMarlinMoEMethod,
-        )
-
+    ) -> Optional[QuantizeMethodBase]:
+        # Delay the import to avoid circular dependency
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
         from sglang.srt.layers.quantization import get_linear_quant_method
 
@@ -291,12 +322,7 @@ class GPTQMarlinConfig(QuantizationConfig):
         sym = quant_config.get("sym")
         desc_act = quant_config.get("desc_act")
 
-        from vllm.model_executor.layers.quantization.utils.marlin_utils import (
-            check_marlin_supported,
-        )
-        from vllm.platforms import current_platform
-
-        if not current_platform.is_cuda():
+        if not _is_cuda:
             return False
 
         if quant_method != "gptq":
@@ -385,11 +411,7 @@ class MarlinConfig(QuantizationConfig):
 
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg, user_quant) -> Optional[str]:
-        # compat: autogptq >=0.8.0 use checkpoint_format: str
-        # compat: autogptq <=0.7.1 is_marlin_format: bool
-        is_marlin_format = hf_quant_cfg.get(
-            "checkpoint_format"
-        ) == "marlin" or hf_quant_cfg.get("is_marlin_format", False)
+        is_marlin_format = check_marlin_format(hf_quant_cfg)
 
         is_valid_user_quant = (
             user_quant is None or user_quant == "gptq" or user_quant == "marlin"
@@ -406,8 +428,9 @@ class MarlinConfig(QuantizationConfig):
 
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
-    ) -> Optional["MarlinLinearMethod"]:
-        from vllm.model_executor.layers.quantization.marlin import MarlinLinearMethod
+    ) -> Optional[MarlinLinearMethod]:
+        # Delay the import to avoid circular dependency
+        from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 
         if isinstance(layer, LinearBase) or (
             isinstance(layer, ParallelLMHead) and self.lm_head_quantized

@@ -1,8 +1,8 @@
 """Common utilities for testing and benchmarking"""
 
 import argparse
-import asyncio
 import copy
+import logging
 import os
 import random
 import subprocess
@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
 from typing import Callable, List, Optional, Tuple
@@ -23,27 +24,53 @@ from sglang.bench_serving import run_benchmark
 from sglang.global_config import global_config
 from sglang.lang.backend.openai import OpenAI
 from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
-from sglang.srt.utils import get_bool_env_var, kill_process_tree
+from sglang.srt.utils import (
+    get_bool_env_var,
+    is_port_available,
+    kill_process_tree,
+    retry,
+)
 from sglang.test.run_eval import run_eval
 from sglang.utils import get_exception_traceback
 
-DEFAULT_FP8_MODEL_NAME_FOR_TEST = "neuralmagic/Meta-Llama-3.1-8B-FP8"
-DEFAULT_FP8_MODEL_NAME_FOR_ACCURACY_TEST = "neuralmagic/Meta-Llama-3-8B-Instruct-FP8"
-DEFAULT_FP8_MODEL_NAME_FOR_DYNAMIC_QUANT_ACCURACY_TEST = (
-    "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8-dynamic"
-)
+# General test models
 DEFAULT_MODEL_NAME_FOR_TEST = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_SMALL_MODEL_NAME_FOR_TEST = "meta-llama/Llama-3.2-1B-Instruct"
 DEFAULT_MOE_MODEL_NAME_FOR_TEST = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 DEFAULT_SMALL_MOE_MODEL_NAME_FOR_TEST = "Qwen/Qwen1.5-MoE-A2.7B"
-DEFAULT_SMALL_EMBEDDING_MODEL_NAME_FOR_TEST = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+
+# MLA test models
 DEFAULT_MLA_MODEL_NAME_FOR_TEST = "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
 DEFAULT_MLA_FP8_MODEL_NAME_FOR_TEST = "neuralmagic/DeepSeek-Coder-V2-Lite-Instruct-FP8"
+DEFAULT_MODEL_NAME_FOR_TEST_MLA = "lmsys/sglang-ci-dsv3-test"
+DEFAULT_MODEL_NAME_FOR_TEST_MLA_NEXTN = "lmsys/sglang-ci-dsv3-test-NextN"
+
+# FP8 models
+DEFAULT_MODEL_NAME_FOR_TEST_FP8 = "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8"
+DEFAULT_MODEL_NAME_FOR_ACCURACY_TEST_FP8 = "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8"
+DEFAULT_MODEL_NAME_FOR_DYNAMIC_QUANT_ACCURACY_TEST_FP8 = (
+    "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8-dynamic"
+)
+DEFAULT_MODEL_NAME_FOR_MODELOPT_QUANT_ACCURACY_TEST_FP8 = (
+    "nvidia/Llama-3.1-8B-Instruct-FP8"
+)
+
+# EAGLE
+DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST = "meta-llama/Llama-2-7b-chat-hf"
+DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST = "lmsys/sglang-EAGLE-llama2-chat-7B"
+DEFAULT_MODEL_NAME_FOR_TEST_EAGLE3 = "jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B"
+
+# Other use cases
+DEFAULT_MODEL_NAME_FOR_TEST_LOCAL_ATTENTION = (
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+)
+DEFAULT_SMALL_EMBEDDING_MODEL_NAME_FOR_TEST = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
 DEFAULT_REASONING_MODEL_NAME_FOR_TEST = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 DEFAULT_AWQ_MOE_MODEL_NAME_FOR_TEST = (
     "hugging-quants/Mixtral-8x7B-Instruct-v0.1-AWQ-INT4"
 )
-DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 1000
+
+# Nightly tests
 DEFAULT_MODEL_NAME_FOR_NIGHTLY_EVAL_TP1 = "meta-llama/Llama-3.1-8B-Instruct,mistralai/Mistral-7B-Instruct-v0.3,deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct,google/gemma-2-27b-it"
 DEFAULT_MODEL_NAME_FOR_NIGHTLY_EVAL_TP2 = "meta-llama/Llama-3.1-70B-Instruct,mistralai/Mixtral-8x7B-Instruct-v0.1,Qwen/Qwen2-57B-A14B-Instruct"
 DEFAULT_MODEL_NAME_FOR_NIGHTLY_EVAL_FP8_TP1 = "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8,neuralmagic/Mistral-7B-Instruct-v0.3-FP8,neuralmagic/DeepSeek-Coder-V2-Lite-Instruct-FP8,neuralmagic/gemma-2-2b-it-FP8"
@@ -52,12 +79,10 @@ DEFAULT_MODEL_NAME_FOR_NIGHTLY_EVAL_QUANT_TP1 = "hugging-quants/Meta-Llama-3.1-8
 DEFAULT_SMALL_MODEL_NAME_FOR_TEST_QWEN = "Qwen/Qwen2.5-1.5B-Instruct"
 DEFAULT_SMALL_VLM_MODEL_NAME = "Qwen/Qwen2-VL-2B"
 
-
-DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST = "meta-llama/Llama-2-7b-chat-hf"
-DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST = "lmsys/sglang-EAGLE-llama2-chat-7B"
-
 DEFAULT_IMAGE_URL = "https://github.com/sgl-project/sglang/blob/main/test/lang/example_image.png?raw=true"
 DEFAULT_VIDEO_URL = "https://raw.githubusercontent.com/EvolvingLMMs-Lab/sglang/dev/onevision_local/assets/jobs.mp4"
+
+DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH = 1000
 
 
 def is_in_ci():
@@ -66,11 +91,14 @@ def is_in_ci():
 
 
 if is_in_ci():
-    DEFAULT_PORT_FOR_SRT_TEST_RUNNER = 5157
-    DEFAULT_URL_FOR_TEST = "http://127.0.0.1:6157"
+    DEFAULT_PORT_FOR_SRT_TEST_RUNNER = (
+        5000 + int(os.environ.get("CUDA_VISIBLE_DEVICES", "0")[0]) * 100
+    )
 else:
-    DEFAULT_PORT_FOR_SRT_TEST_RUNNER = 1157
-    DEFAULT_URL_FOR_TEST = "http://127.0.0.1:2157"
+    DEFAULT_PORT_FOR_SRT_TEST_RUNNER = (
+        7000 + int(os.environ.get("CUDA_VISIBLE_DEVICES", "0")[0]) * 100
+    )
+DEFAULT_URL_FOR_TEST = f"http://127.0.0.1:{DEFAULT_PORT_FOR_SRT_TEST_RUNNER + 1000}"
 
 
 def call_generate_lightllm(prompt, temperature, max_tokens, stop=None, url=None):
@@ -88,6 +116,17 @@ def call_generate_lightllm(prompt, temperature, max_tokens, stop=None, url=None)
     assert res.status_code == 200
     pred = res.json()["generated_text"][0]
     return pred
+
+
+def find_available_port(base_port: int):
+    port = base_port + random.randint(100, 1000)
+    while True:
+        if is_port_available(port):
+            return port
+        if port < 60000:
+            port += 42
+        else:
+            port -= 43
 
 
 def call_generate_vllm(prompt, temperature, max_tokens, stop=None, n=1, url=None):
@@ -423,6 +462,13 @@ def popen_launch_server(
                     return process
             except requests.RequestException:
                 pass
+
+            return_code = process.poll()
+            if return_code is not None:
+                raise Exception(
+                    f"Server unexpectedly exits ({return_code=}). Usually there will be error logs describing the cause far above this line."
+                )
+
             time.sleep(10)
 
     kill_process_tree(process.pid)
@@ -453,11 +499,17 @@ def run_with_timeout(
     return ret_value[0]
 
 
-def run_unittest_files(files: List, timeout_per_file: float):
+@dataclass
+class TestFile:
+    name: str
+    estimated_time: float = 60
+
+
+def run_unittest_files(files: List[TestFile], timeout_per_file: float):
     tic = time.time()
     success = True
 
-    for file in files:
+    for i, file in enumerate(files):
         filename, estimated_time = file.name, file.estimated_time
         process = None
 
@@ -465,7 +517,10 @@ def run_unittest_files(files: List, timeout_per_file: float):
             nonlocal process
 
             filename = os.path.join(os.getcwd(), filename)
-            print(f".\n.\nBegin:\npython3 {filename}\n.\n.\n", flush=True)
+            print(
+                f".\n.\nBegin ({i}/{len(files) - 1}):\npython3 {filename}\n.\n.\n",
+                flush=True,
+            )
             tic = time.time()
 
             process = subprocess.Popen(
@@ -475,7 +530,7 @@ def run_unittest_files(files: List, timeout_per_file: float):
             elapsed = time.time() - tic
 
             print(
-                f".\n.\nEnd:\n{filename=}, {elapsed=:.0f}, {estimated_time=}\n.\n.\n",
+                f".\n.\nEnd ({i}/{len(files) - 1}):\n{filename=}, {elapsed=:.0f}, {estimated_time=}\n.\n.\n",
                 flush=True,
             )
             return process.returncode
@@ -650,8 +705,6 @@ def run_bench_one_batch(model, other_args):
         "python3",
         "-m",
         "sglang.bench_one_batch",
-        "--model-path",
-        model,
         "--batch-size",
         "1",
         "--input",
@@ -660,6 +713,8 @@ def run_bench_one_batch(model, other_args):
         "8",
         *[str(x) for x in other_args],
     ]
+    if model is not None:
+        command += ["--model-path", model]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     try:
@@ -870,7 +925,6 @@ def run_mulit_request_test(
     enable_overlap=False,
     chunked_prefill_size=32,
 ):
-
     def workload_func(base_url, model):
         def run_one(_):
             prompt = """
@@ -905,6 +959,10 @@ def run_mulit_request_test(
 
 
 def write_github_step_summary(content):
+    if not os.environ.get("GITHUB_STEP_SUMMARY"):
+        logging.warning("GITHUB_STEP_SUMMARY environment variable not set")
+        return
+
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
         f.write(content)
 
@@ -982,3 +1040,14 @@ def run_logprob_check(self: unittest.TestCase, arg: Tuple):
                                 rank += 1
                             else:
                                 raise
+
+
+class CustomTestCase(unittest.TestCase):
+    def _callTestMethod(self, method):
+        max_retry = int(
+            os.environ.get("SGLANG_TEST_MAX_RETRY", "1" if is_in_ci() else "0")
+        )
+        retry(
+            lambda: super(CustomTestCase, self)._callTestMethod(method),
+            max_retry=max_retry,
+        )

@@ -68,6 +68,7 @@ class TpModelWorker:
             context_length=server_args.context_length,
             model_override_args=server_args.json_model_override_args,
             is_embedding=server_args.is_embedding,
+            enable_multimodal=server_args.enable_multimodal,
             dtype=server_args.dtype,
             quantization=server_args.quantization,
         )
@@ -115,6 +116,7 @@ class TpModelWorker:
             ),
             self.model_runner.req_to_token_pool.size,
         )
+        assert self.max_running_requests > 0, "max_running_request is zero"
         self.max_req_len = min(
             self.model_config.context_len - 1,
             self.max_total_num_tokens - 1,
@@ -131,6 +133,9 @@ class TpModelWorker:
             self.model_runner.tp_group.cpu_group,
         )[0]
         set_random_seed(self.random_seed)
+
+        # A reference make this class has the same member as TpModelWorkerClient
+        self.worker = self
 
     def get_worker_info(self):
         return (
@@ -165,13 +170,13 @@ class TpModelWorker:
     def forward_batch_generation(
         self,
         model_worker_batch: ModelWorkerBatch,
-        launch_done: Optional[threading.Event] = None,
         skip_sample: bool = False,
     ) -> Tuple[LogitsProcessorOutput, Optional[torch.Tensor]]:
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
         logits_output = self.model_runner.forward(forward_batch)
-        if launch_done:
-            launch_done.set()
+
+        if model_worker_batch.launch_done is not None:
+            model_worker_batch.launch_done.set()
 
         if skip_sample:
             next_token_ids = None
@@ -214,7 +219,7 @@ class TpModelWorker:
     def update_weights_from_tensor(self, recv_req: UpdateWeightsFromTensorReqInput):
         success, message = self.model_runner.update_weights_from_tensor(
             named_tensors=MultiprocessingSerializer.deserialize(
-                recv_req.serialized_named_tensors
+                recv_req.serialized_named_tensors[self.tp_rank]
             ),
             load_format=recv_req.load_format,
         )

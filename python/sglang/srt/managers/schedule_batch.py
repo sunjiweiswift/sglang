@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from enum import Enum, auto
+
 # Copyright 2023-2024 SGLang Team
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,6 +35,7 @@ ScheduleBatch -> ModelWorkerBatch -> ForwardBatch
 import copy
 import dataclasses
 import logging
+import threading
 from typing import TYPE_CHECKING, List, Optional, Set, Tuple, Union
 
 import numpy as np
@@ -42,6 +46,8 @@ import triton.language as tl
 from sglang.global_config import global_config
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.constrained.base_grammar_backend import BaseGrammarObject
+from sglang.srt.disaggregation.base import BaseKVSender
+from sglang.srt.disaggregation.decode import ScheduleBatchDisaggregationDecodeMixin
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool, TokenToKVPoolAllocator
@@ -49,7 +55,7 @@ from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, Forw
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import get_compiler_backend, next_power_of_2
+from sglang.srt.utils import flatten_nested_list, get_compiler_backend
 
 if TYPE_CHECKING:
     from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
@@ -62,17 +68,21 @@ global_server_args_dict = {
     "attention_backend": ServerArgs.attention_backend,
     "sampling_backend": ServerArgs.sampling_backend,
     "triton_attention_reduce_in_fp32": ServerArgs.triton_attention_reduce_in_fp32,
-    "disable_mla": ServerArgs.disable_mla,
     "torchao_config": ServerArgs.torchao_config,
     "enable_nan_detection": ServerArgs.enable_nan_detection,
     "enable_dp_attention": ServerArgs.enable_dp_attention,
     "enable_ep_moe": ServerArgs.enable_ep_moe,
+    "enable_deepep_moe": ServerArgs.enable_deepep_moe,
+    "deepep_mode": ServerArgs.deepep_mode,
     "device": ServerArgs.device,
     "speculative_accept_threshold_single": ServerArgs.speculative_accept_threshold_single,
     "speculative_accept_threshold_acc": ServerArgs.speculative_accept_threshold_acc,
-    "enable_flashinfer_mla": ServerArgs.enable_flashinfer_mla,
     "disable_radix_cache": ServerArgs.disable_radix_cache,
     "flashinfer_mla_disable_ragged": ServerArgs.flashinfer_mla_disable_ragged,
+    "moe_dense_tp_size": ServerArgs.moe_dense_tp_size,
+    "chunked_prefill_size": ServerArgs.chunked_prefill_size,
+    "n_share_experts_fusion": ServerArgs.n_share_experts_fusion,
+    "disable_chunked_prefix_cache": ServerArgs.disable_chunked_prefix_cache,
 }
 
 logger = logging.getLogger(__name__)
@@ -138,66 +148,183 @@ class FINISH_ABORT(BaseFinishReason):
         }
 
 
+class Modality(Enum):
+    IMAGE = auto()
+    MULTI_IMAGES = auto()
+    VIDEO = auto()
+    AUDIO = auto()
+
+
 @dataclasses.dataclass
-class ImageInputs:
-    """The image related inputs."""
+class MultimodalDataItem:
+    """
+    A single multimodal data, from a single image/video/audio or others
+    """
 
-    pixel_values: Union[torch.Tensor, np.array]
-    image_hashes: Optional[list] = None
-    image_sizes: Optional[list] = None
-    image_offsets: Optional[list] = None
-    image_pad_len: Optional[list] = None
-    pad_values: Optional[list] = None
-    modalities: Optional[list] = None
-    num_image_tokens: Optional[int] = None
+    modality: Modality
 
-    # Llava related
-    aspect_ratio_ids: Optional[List[torch.Tensor]] = None
+    hash: int = None
+    pad_value: int = None
+
+    aspect_ratio_id: Optional[List[torch.Tensor]] = None
     aspect_ratio_mask: Optional[List[torch.Tensor]] = None
 
+    image_sizes: Tuple[int, int] = None
+    image_offsets: Optional[list] = None
+
+    # the real data, pixel_values or audio_features
+    # data: Union[List[torch.Tensor], List[np.array]]
+    pixel_values: Union[torch.Tensor, np.array] = None
+    image_grid_thws: Union[torch.Tensor, np.array] = None
+    video_grid_thws: Union[torch.Tensor, np.array] = None
+
+    image_emb_mask: Optional[torch.Tensor] = None
+    image_spatial_crop: Optional[torch.Tensor] = None
+    second_per_grid_ts: Optional[List[torch.Tensor]] = None
+
+    # [num_images, (n, w, h)]
+    tgt_size: Tuple[int, int] = None
+
+    audio_features: Union[torch.Tensor, np.array] = None
+    audio_feature_lens: Optional[List[torch.Tensor]] = None
+
+    @staticmethod
+    def is_empty_list(l):
+        if l is None:
+            return True
+        return len([item for item in flatten_nested_list(l) if item is not None]) == 0
+
+    def set_pad_value(self):
+        """
+        Set the pad value after first hashing the data
+        """
+
+        def data_hash(data) -> int:
+            hash_bytes = hashlib.sha256(data).digest()[:8]
+            return int.from_bytes(hash_bytes, byteorder="big", signed=False)
+
+        def tensor_hash(tensor_list) -> int:
+            """
+            hash a tensor or a tensor list
+            """
+            tensor = tensor_list
+            if isinstance(tensor_list, list):
+                tensor_list = flatten_nested_list(tensor_list)
+                tensor_list = [
+                    x.flatten() if isinstance(x, torch.Tensor) else x
+                    for x in tensor_list
+                ]
+                tensor = torch.concat(tensor_list)
+
+            tensor = tensor.detach().contiguous()
+
+            if tensor.dtype == torch.bfloat16:
+                # memoryview() doesn't support PyTorch's BFloat16 dtype
+                tensor = tensor.float()
+
+            assert isinstance(tensor, torch.Tensor)
+            if tensor.is_cuda:
+                # TODO: improve this
+                tensor_cpu = tensor.cpu()
+            else:
+                tensor_cpu = tensor
+
+            mv = memoryview(tensor_cpu.numpy())
+            return data_hash(mv.tobytes())
+
+        def hash_feature(f):
+            if isinstance(f, list):
+                if isinstance(f[0], torch.Tensor):
+                    return tensor_hash(f)
+                return data_hash(tuple(flatten_nested_list(f)))
+            elif isinstance(f, np.ndarray):
+                arr = np.ascontiguousarray(f)
+                arr_bytes = arr.tobytes()
+                return data_hash(arr_bytes)
+            elif isinstance(f, torch.Tensor):
+                return tensor_hash([f])
+            return data_hash(f)
+
+        if self.is_audio():
+            self.hash = hash_feature(self.audio_features)
+        else:
+            self.hash = hash_feature(self.pixel_values)
+
+        assert self.hash is not None
+        self.pad_value = self.hash % (1 << 30)
+
+    def is_audio(self):
+        return (
+            self.modality == Modality.AUDIO
+        ) and not MultimodalDataItem.is_empty_list(self.audio_features)
+
+    def is_image(self):
+        return (
+            self.modality == Modality.IMAGE or self.modality == Modality.MULTI_IMAGES
+        ) and not MultimodalDataItem.is_empty_list(self.pixel_values)
+
+    def is_video(self):
+        return (
+            self.modality == Modality.VIDEO
+        ) and not MultimodalDataItem.is_empty_list(self.pixel_values)
+
+    def is_valid(self) -> bool:
+        return self.is_image() or self.is_video() or self.is_audio()
+
+    def validate(self):
+        ...
+        # TODO
+
+
+@dataclasses.dataclass
+class MultimodalInputs:
+    """The multimodal data related inputs."""
+
+    # items of data
+    mm_items: List[MultimodalDataItem]
+    image_pad_len: Optional[list] = None
+    num_image_tokens: Optional[int] = None
+
     # QWen2-VL related
-    image_grid_thws: List[Tuple[int, int, int]] = None
+    mrope_positions: Optional[torch.Tensor] = None
     mrope_position_delta: Optional[torch.Tensor] = None
 
-    # The id of the single-image placeholder token
-    im_token_id: Optional[torch.Tensor] = None
-    # All the images in the batch should share the same special image
-    # bound token ids.
+    # image
+    im_token_id: Optional[int] = None
     im_start_id: Optional[int] = None
     im_end_id: Optional[int] = None
     slice_start_id: Optional[int] = None
     slice_end_id: Optional[int] = None
-    tgt_sizes: Optional[list] = None
 
-    # denotes the number of valid image tokens in each image
-    images_emb_mask: Optional[torch.BoolTensor] = None
+    # video
+    video_token_id: Optional[int] = None
+
+    # audio
+    audio_start_id: Optional[torch.Tensor] = None
+    audio_end_id: Optional[torch.Tensor] = None
 
     @staticmethod
     def from_dict(obj: dict):
-        ret = ImageInputs(
-            pixel_values=obj["pixel_values"],
-            image_hashes=obj["image_hashes"],
+        ret = MultimodalInputs(
+            mm_items=obj["mm_items"],
         )
 
-        # Use image hash as fake token_ids. We use this as the key for prefix matching in the radix cache.
-        # Please note that if the `input_ids` is later used in the model forward,
-        # you also need to clamp the values within the range of [0, vocab_size) to avoid out-of-bound
-        # errors in cuda kernels. See also llava.py for example.
-        ret.pad_values = [x % (1 << 30) for x in ret.image_hashes]
+        assert isinstance(ret.mm_items, list)
+        ret.mm_items = [item for item in ret.mm_items if item.is_valid()]
+
+        for item in ret.mm_items:
+            item.set_pad_value()
 
         optional_args = [
-            "image_sizes",
-            "modalities",
-            "aspect_ratio_ids",
-            "aspect_ratio_mask",
-            "image_grid_thws",
+            "mrope_positions",
+            "mrope_position_delta",
             "im_token_id",
             "im_start_id",
             "im_end_id",
             "slice_start_id",
             "slice_end_id",
-            "tgt_sizes",
-            "images_emb_mask",
+            "audio_start_id",
+            "audio_end_id",
         ]
         for arg in optional_args:
             if arg in obj:
@@ -205,29 +332,56 @@ class ImageInputs:
 
         return ret
 
-    def merge(self, other):
-        assert self.pixel_values.shape[1:] == other.pixel_values.shape[1:]
-        self.pixel_values = np.concatenate([self.pixel_values, other.pixel_values])
+    def contains_image_inputs(self) -> bool:
+        """ """
+        return any(item.is_image() for item in self.mm_items)
 
-        # Use image hash as fake token_ids. We use this as the key for prefix matching in the radix cache.
-        # Please note that if the `input_ids` is later used in the model forward,
-        # you also need to clamp the values within the range of [0, vocab_size) to avoid out-of-bound
-        # errors in cuda kernels. See also llava.py for example.
-        self.image_hashes += other.image_hashes
-        self.pad_values = [x % (1 << 30) for x in self.image_hashes]
+    def contains_audio_inputs(self) -> bool:
+        """ """
+        return any(item.is_audio() for item in self.mm_items)
 
+    def contains_mm_input(self) -> bool:
+        return any(True for item in self.mm_items if item.is_valid())
+
+    def merge(self, other: MultimodalInputs):
+        """
+        merge image inputs when requests are being merged
+        """
+
+        # args needed to be merged
         optional_args = [
-            "image_sizes",
-            "image_offsets",
+            "mm_items",
             "image_pad_len",
-            # "modalities", # modalities should be ["multi-images"] (one entry) even for multiple images
-            "aspect_ratio_ids",
-            "aspect_ratio_mask",
-            "image_grid_thws",
         ]
         for arg in optional_args:
-            if getattr(self, arg, None) is not None:
-                setattr(self, arg, getattr(self, arg) + getattr(other, arg))
+            self_arg = getattr(self, arg, None)
+            if self_arg is not None:
+                setattr(self, arg, self_arg + getattr(other, arg))
+
+        mrope_positions = self.mrope_positions
+        if mrope_positions is not None:
+            if other.mrope_positions is None:
+                self.mrope_positions = mrope_positions
+            else:
+                self.mrope_positions = torch.cat(
+                    [self.mrope_positions, other.mrope_positions], dim=1
+                )
+
+        mrope_position_delta = self.mrope_position_delta
+        if mrope_position_delta is not None:
+            if other.mrope_position_delta is None:
+                self.mrope_position_delta = mrope_position_delta
+            else:
+                self.mrope_position_delta = torch.cat(
+                    [self.mrope_position_delta, other.mrope_position_delta], dim=0
+                )
+
+        for key, val in other.__dict__.items():
+            if "_id" in key:
+                # set token_ids
+                if getattr(self, key, None) is None:
+                    setattr(self, key, getattr(other, key, None))
+        # other args would be kept intact
 
 
 class Req:
@@ -250,6 +404,9 @@ class Req:
         custom_logit_processor: Optional[str] = None,
         return_hidden_states: bool = False,
         eos_token_ids: Optional[Set[int]] = None,
+        bootstrap_host: Optional[str] = None,
+        bootstrap_port: Optional[int] = None,
+        bootstrap_room: Optional[int] = None,
     ):
         # Input and output info
         self.rid = rid
@@ -305,7 +462,7 @@ class Req:
         self.decoded_text = ""
 
         # For multimodal inputs
-        self.image_inputs: Optional[ImageInputs] = None
+        self.multimodal_inputs: Optional[MultimodalInputs] = None
 
         # Prefix info
         # The indices to kv cache for the shared prefix.
@@ -333,6 +490,10 @@ class Req:
         self.token_ids_logprob = token_ids_logprob
         self.temp_scaled_logprobs = False
         self.top_p_normalized_logprobs = False
+
+        # Latency Breakdown
+        self.queue_time_start = None
+        self.queue_time_end = None
 
         # Logprobs (return values)
         self.input_token_logprobs_val: Optional[List[float]] = None
@@ -378,15 +539,39 @@ class Req:
         self.spec_verify_ct = 0
         self.lora_path = lora_path
 
+        # For disaggregation
+        self.bootstrap_host: str = bootstrap_host
+        self.bootstrap_port: Optional[int] = bootstrap_port
+        self.bootstrap_room: Optional[int] = bootstrap_room
+        self.disagg_kv_sender: Optional[BaseKVSender] = None
+
+        # used for warmup because we don't have a pair yet when init
+        self.skip_kv_transfer: bool = False
+        # the start index of the sent kv cache
+        # We want to send it chunk by chunk for chunked prefill.
+        # After every chunk forward, we do the following:
+        # kv_send(req.input_ids[req.start_send_idx:len(req.fill_ids)])
+        # start_send_idx = len(req.fill_ids)
+        self.start_send_idx: int = 0
+
+        self.metadata_buffer_index: int = -1
+        # The first output_id transferred from prefill instance.
+        self.transferred_output_id: Optional[int] = None
+
+        # For overlap schedule, we delay the kv transfer until `process_batch_result_disagg_prefill` rather than `process_prefill_chunk` in non-overlap
+        # This is because kv is not ready in `process_prefill_chunk`.
+        # We use `tmp_end_idx` to store the end index of the kv cache to send.
+        self.tmp_end_idx: int = -1
+
     @property
     def seqlen(self):
         return len(self.origin_input_ids) + len(self.output_ids)
 
     def extend_image_inputs(self, image_inputs):
-        if self.image_inputs is None:
-            self.image_inputs = image_inputs
+        if self.multimodal_inputs is None:
+            self.multimodal_inputs = image_inputs
         else:
-            self.image_inputs.merge(image_inputs)
+            self.multimodal_inputs.merge(image_inputs)
 
     def finished(self) -> bool:
         # Whether request reached finished condition
@@ -410,6 +595,14 @@ class Req:
                 self.prefix_indices, self.last_node = tree_cache.match_prefix(
                     rid=self.rid, key=self.adjust_max_prefix_ids()
                 )
+        elif enable_hierarchical_cache:
+            # in case last_node is evicted during scheduling, we need to update the prefix_indices
+            while self.last_node.evicted:
+                self.prefix_indices = self.prefix_indices[
+                    : -len(self.last_node.host_value)
+                ]
+                self.last_node = self.last_node.parent
+
         self.extend_input_len = len(self.fill_ids) - len(self.prefix_indices)
 
     def adjust_max_prefix_ids(self):
@@ -501,6 +694,7 @@ class Req:
         self.extend_logprob_start_len = 0
         self.is_chunked = 0
         self.req_pool_idx = None
+        self.already_computed = 0
 
     def __repr__(self):
         return (
@@ -513,7 +707,7 @@ bid = 0
 
 
 @dataclasses.dataclass
-class ScheduleBatch:
+class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     """Store all information of a batch on the scheduler."""
 
     # Request, memory pool, and cache
@@ -530,6 +724,9 @@ class ScheduleBatch:
     # the check of whether to prefill new requests.
     # This is an optimization to reduce the overhead of the prefill check.
     batch_is_full: bool = False
+
+    # Events
+    launch_done: Optional[threading.Event] = None
 
     # Sampling info
     sampling_info: SamplingBatchInfo = None
@@ -642,10 +839,13 @@ class ScheduleBatch:
             )
         return req_pool_indices
 
-    def alloc_token_slots(self, num_tokens: int):
+    def alloc_token_slots(self, num_tokens: int, backup_state: bool = False):
         if self.token_to_kv_pool_allocator.available_size() < num_tokens:
             if self.tree_cache is not None:
                 self.tree_cache.evict(num_tokens)
+
+        if backup_state:
+            state = self.token_to_kv_pool_allocator.backup_state()
 
         out_cache_loc = self.token_to_kv_pool_allocator.alloc(num_tokens)
         if out_cache_loc is None:
@@ -660,7 +860,10 @@ class ScheduleBatch:
                 self.tree_cache.pretty_print()
             raise RuntimeError(error_msg)
 
-        return out_cache_loc
+        if backup_state:
+            return out_cache_loc, state
+        else:
+            return out_cache_loc
 
     def alloc_paged_token_slots_extend(
         self,
@@ -668,6 +871,7 @@ class ScheduleBatch:
         seq_lens: torch.Tensor,
         last_loc: torch.Tensor,
         extend_num_tokens: int,
+        backup_state: bool = False,
     ):
         if (
             self.token_to_kv_pool_allocator.available_size()
@@ -679,6 +883,9 @@ class ScheduleBatch:
                     extend_num_tokens
                     + len(seq_lens) * self.token_to_kv_pool_allocator.page_size,
                 )
+
+        if backup_state:
+            state = self.token_to_kv_pool_allocator.backup_state()
 
         out_cache_loc = self.token_to_kv_pool_allocator.alloc_extend(
             prefix_lens, seq_lens, last_loc, extend_num_tokens
@@ -693,23 +900,31 @@ class ScheduleBatch:
             )
             logger.error(error_msg)
             raise RuntimeError(error_msg)
-        return out_cache_loc
+
+        if backup_state:
+            return out_cache_loc, state
+        else:
+            return out_cache_loc
 
     def alloc_paged_token_slots_decode(
         self,
         seq_lens: torch.Tensor,
         last_loc: torch.Tensor,
+        backup_state: bool = False,
     ):
-        if (
-            self.token_to_kv_pool_allocator.available_size()
-            < len(seq_lens) * self.token_to_kv_pool_allocator.page_size
-        ):
-            if self.tree_cache is not None:
+        if self.tree_cache is not None:
+            if (
+                self.token_to_kv_pool_allocator.available_size()
+                < len(seq_lens) * self.token_to_kv_pool_allocator.page_size
+            ):
                 self.tree_cache.evict(
                     len(seq_lens) * self.token_to_kv_pool_allocator.page_size,
                 )
-        out_cache_loc = self.token_to_kv_pool_allocator.alloc_decode(seq_lens, last_loc)
 
+        if backup_state:
+            state = self.token_to_kv_pool_allocator.backup_state()
+
+        out_cache_loc = self.token_to_kv_pool_allocator.alloc_decode(seq_lens, last_loc)
         if out_cache_loc is None:
             error_msg = (
                 f"Decode out of memory. Try to lower your batch size.\n"
@@ -720,14 +935,18 @@ class ScheduleBatch:
             )
             logger.error(error_msg)
             raise RuntimeError(error_msg)
-        return out_cache_loc
+
+        if backup_state:
+            return out_cache_loc, state
+        else:
+            return out_cache_loc
 
     def prepare_encoder_info_extend(self, input_ids: List[int], seq_lens: List[int]):
         self.encoder_lens_cpu = []
         self.encoder_cached = []
 
         for req in self.reqs:
-            im = req.image_inputs
+            im = req.multimodal_inputs
             if im is None or im.num_image_tokens is None:
                 # No image input
                 self.encoder_lens_cpu.append(0)
@@ -995,17 +1214,25 @@ class ScheduleBatch:
         # TODO (lianmin): Revisit this. It should be seq_len - 1
         self.extend_logprob_start_lens.extend([0] * running_bs)
 
+    def new_page_count_next_decode(self):
+        page_size = self.token_to_kv_pool_allocator.page_size
+        if page_size == 1:
+            return len(self.reqs)
+        return sum(1 for req in self.reqs if req.seqlen % page_size == 0)
+
     def check_decode_mem(self, buf_multiplier=1):
-        bs = len(self.reqs) * buf_multiplier
-        if self.token_to_kv_pool_allocator.available_size() >= bs:
+        tokens_required = (
+            self.new_page_count_next_decode()
+            * buf_multiplier
+            * self.token_to_kv_pool_allocator.page_size
+        )
+
+        if self.token_to_kv_pool_allocator.available_size() >= tokens_required:
             return True
 
-        self.tree_cache.evict(bs)
+        self.tree_cache.evict(tokens_required)
 
-        if self.token_to_kv_pool_allocator.available_size() >= bs:
-            return True
-
-        return False
+        return self.token_to_kv_pool_allocator.available_size() >= tokens_required
 
     def retract_decode(self, server_args: ServerArgs):
         """Retract the decoding requests when there is not enough memory."""
@@ -1067,7 +1294,9 @@ class ScheduleBatch:
                 self.req_to_token_pool.free(req.req_pool_idx)
             else:
                 # TODO: apply more fine-grained retraction
-                last_uncached_pos = len(req.prefix_indices)
+                last_uncached_pos = (
+                    len(req.prefix_indices) // server_args.page_size
+                ) * server_args.page_size
                 token_indices = self.req_to_token_pool.req_to_token[
                     req.req_pool_idx, last_uncached_pos : seq_lens_cpu[idx]
                 ]
@@ -1243,15 +1472,14 @@ class ScheduleBatch:
         if self.model_config.is_encoder_decoder:
             self.encoder_lens = torch.cat([self.encoder_lens, other.encoder_lens])
             self.encoder_lens_cpu.extend(other.encoder_lens_cpu)
-
-        self.req_pool_indices = torch.concat(
+        self.req_pool_indices = torch.cat(
             [self.req_pool_indices, other.req_pool_indices]
         )
-        self.seq_lens = torch.concat([self.seq_lens, other.seq_lens])
+        self.seq_lens = torch.cat([self.seq_lens, other.seq_lens])
         self.out_cache_loc = None
         self.seq_lens_sum += other.seq_lens_sum
         if self.output_ids is not None:
-            self.output_ids = torch.concat([self.output_ids, other.output_ids])
+            self.output_ids = torch.cat([self.output_ids, other.output_ids])
         if self.return_logprob and other.return_logprob:
             self.top_logprobs_nums.extend(other.top_logprobs_nums)
             self.token_ids_logprobs.extend(other.token_ids_logprobs)
@@ -1273,16 +1501,25 @@ class ScheduleBatch:
 
     def get_model_worker_batch(self) -> ModelWorkerBatch:
         if self.forward_mode.is_decode_or_idle():
-            if global_server_args_dict["enable_flashinfer_mla"]:
-                decode_seq_lens = self.seq_lens.cpu()
-            else:
-                decode_seq_lens = None
             extend_seq_lens = extend_prefix_lens = extend_logprob_start_lens = None
         else:
-            decode_seq_lens = None
             extend_seq_lens = self.extend_lens
             extend_prefix_lens = self.prefix_lens
             extend_logprob_start_lens = self.extend_logprob_start_lens
+
+        # Create seq_lens_cpu when needed
+        if (
+            (
+                global_server_args_dict["use_mla_backend"]
+                and global_server_args_dict["attention_backend"] == "flashinfer"
+            )
+            or global_server_args_dict["attention_backend"] == "flashmla"
+            or global_server_args_dict["attention_backend"] == "fa3"
+            or global_server_args_dict["attention_backend"] == "cutlass_mla"
+        ):
+            seq_lens_cpu = self.seq_lens.cpu()
+        else:
+            seq_lens_cpu = None
 
         if self.sampling_info:
             if self.has_grammar:
@@ -1306,12 +1543,12 @@ class ScheduleBatch:
             global_num_tokens=self.global_num_tokens,
             global_num_tokens_for_logprob=self.global_num_tokens_for_logprob,
             can_run_dp_cuda_graph=self.can_run_dp_cuda_graph,
-            decode_seq_lens=decode_seq_lens,
+            seq_lens_cpu=seq_lens_cpu,
             extend_num_tokens=self.extend_num_tokens,
             extend_seq_lens=extend_seq_lens,
             extend_prefix_lens=extend_prefix_lens,
             extend_logprob_start_lens=extend_logprob_start_lens,
-            image_inputs=[r.image_inputs for r in self.reqs],
+            multimodal_inputs=[r.multimodal_inputs for r in self.reqs],
             encoder_cached=self.encoder_cached,
             encoder_lens=self.encoder_lens,
             encoder_lens_cpu=self.encoder_lens_cpu,
@@ -1333,6 +1570,7 @@ class ScheduleBatch:
                 )
             ),
             extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
+            launch_done=self.launch_done,
         )
 
     def copy(self):
@@ -1367,6 +1605,7 @@ class ModelWorkerBatch:
     req_pool_indices: torch.Tensor
     # The sequence length
     seq_lens: torch.Tensor
+    seq_lens_cpu: Optional[torch.Tensor]
     # The indices of output tokens in the token_to_kv_pool_allocator
     out_cache_loc: torch.Tensor
 
@@ -1383,9 +1622,6 @@ class ModelWorkerBatch:
     global_num_tokens_for_logprob: Optional[List[int]]
     can_run_dp_cuda_graph: bool
 
-    # For decode
-    decode_seq_lens: Optional[torch.Tensor]
-
     # For extend
     extend_num_tokens: Optional[int]
     extend_seq_lens: Optional[List[int]]
@@ -1394,7 +1630,7 @@ class ModelWorkerBatch:
     extend_input_logprob_token_ids: Optional[torch.Tensor]
 
     # For multimodal
-    image_inputs: Optional[List[ImageInputs]]
+    multimodal_inputs: Optional[List[MultimodalInputs]]
 
     # For encoder-decoder
     encoder_cached: Optional[List[bool]]
@@ -1416,6 +1652,9 @@ class ModelWorkerBatch:
     spec_info: Optional[Union[EagleVerifyInput, EagleDraftInput]] = None
     # If set, the output of the batch contains the hidden states of the run.
     capture_hidden_mode: CaptureHiddenMode = None
+
+    # Overlap event
+    launch_done: Optional[threading.Event] = None
 
 
 @triton.jit

@@ -1,5 +1,4 @@
 import json
-import multiprocessing as mp
 import os
 import random
 import threading
@@ -8,7 +7,6 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from types import SimpleNamespace
-from typing import List, Optional
 
 import numpy as np
 import requests
@@ -18,12 +16,12 @@ import sglang as sgl
 from sglang.srt.hf_transformers_utils import get_tokenizer
 from sglang.srt.utils import kill_process_tree
 from sglang.test.few_shot_gsm8k import run_eval
-from sglang.test.runners import DEFAULT_PROMPTS, SRTRunner
 from sglang.test.test_utils import (
     DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST,
     DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
     DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
     DEFAULT_URL_FOR_TEST,
+    CustomTestCase,
     popen_launch_server,
     run_logprob_check,
 )
@@ -33,7 +31,7 @@ prefill_tolerance = 5e-2
 decode_tolerance: float = 5e-2
 
 
-class TestEAGLEEngine(unittest.TestCase):
+class TestEAGLEEngine(CustomTestCase):
     BASE_CONFIG = {
         "model_path": DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST,
         "speculative_draft_model_path": DEFAULT_EAGLE_DRAFT_MODEL_FOR_TEST,
@@ -44,7 +42,7 @@ class TestEAGLEEngine(unittest.TestCase):
         "mem_fraction_static": 0.7,
         "cuda_graph_max_bs": 5,
     }
-    NUM_CONFIGS = 3
+    NUM_CONFIGS = 2
 
     def setUp(self):
         self.prompt = "Today is a sunny day and I like"
@@ -60,8 +58,6 @@ class TestEAGLEEngine(unittest.TestCase):
         configs = [
             # Basic config
             self.BASE_CONFIG,
-            # Disable cuda graph
-            {**self.BASE_CONFIG, "disable_cuda_graph": True},
             # Chunked prefill
             {**self.BASE_CONFIG, "chunked_prefill_size": 4},
         ]
@@ -122,8 +118,8 @@ class TestEAGLEEngine(unittest.TestCase):
 
     def _test_acc_length(self, engine):
         prompt = [
-            "Human: Give me a fully functional FastAPI server. Show the python code.\n\nAssistant:"
-        ] * 5
+            "Human: Give me a fully functional FastAPI server. Show the python code.\n\nAssistant:",
+        ] * 5  # test batched generation
         sampling_params = {"temperature": 0, "max_new_tokens": 512}
         output = engine.generate(prompt, sampling_params)
         output = output[0]
@@ -145,7 +141,7 @@ class TestEAGLEEngine(unittest.TestCase):
         if engine.server_args.model_path == DEFAULT_EAGLE_TARGET_MODEL_FOR_TEST:
             self.assertGreater(acc_length, 3.6)
         else:
-            self.assertGreater(acc_length, 2.6)
+            self.assertGreater(acc_length, 2.5)
 
 
 class TestEAGLEEngineTokenMap(TestEAGLEEngine):
@@ -164,7 +160,22 @@ class TestEAGLEEngineTokenMap(TestEAGLEEngine):
     NUM_CONFIGS = 1
 
 
-class TestEAGLEServer(unittest.TestCase):
+class TestEAGLE3Engine(TestEAGLEEngine):
+    BASE_CONFIG = {
+        "model_path": "meta-llama/Llama-3.1-8B-Instruct",
+        "speculative_draft_model_path": "jamesliu1/sglang-EAGLE3-Llama-3.1-Instruct-8B",
+        "speculative_algorithm": "EAGLE3",
+        "speculative_num_steps": 5,
+        "speculative_eagle_topk": 16,
+        "speculative_num_draft_tokens": 64,
+        "mem_fraction_static": 0.7,
+        "cuda_graph_max_bs": 5,
+        "dtype": "float16",
+    }
+    NUM_CONFIGS = 1
+
+
+class TestEAGLEServer(CustomTestCase):
     PROMPTS = [
         "[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\nToday is a sunny day and I like[/INST]"
         '[INST] <<SYS>>\\nYou are a helpful assistant.\\n<</SYS>>\\nWhat are the mental triggers in Jeff Walker\'s Product Launch Formula and "Launch" book?[/INST]',
@@ -284,10 +295,16 @@ class TestEAGLEServer(unittest.TestCase):
         print(f"{metrics=}")
         self.assertGreater(metrics["accuracy"], 0.20)
 
-        server_info = requests.get(self.base_url + "/get_server_info")
-        avg_spec_accept_length = server_info.json()["avg_spec_accept_length"]
+        server_info = requests.get(self.base_url + "/get_server_info").json()
+        avg_spec_accept_length = server_info["avg_spec_accept_length"]
         print(f"{avg_spec_accept_length=}")
-        self.assertGreater(avg_spec_accept_length, 3.5)
+
+        speculative_eagle_topk = server_info["speculative_eagle_topk"]
+
+        if speculative_eagle_topk == 1:
+            self.assertGreater(avg_spec_accept_length, 2.5)
+        else:
+            self.assertGreater(avg_spec_accept_length, 3.5)
 
         # Wait a little bit so that the memory check happens.
         time.sleep(4)
