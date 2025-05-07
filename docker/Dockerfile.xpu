@@ -4,14 +4,14 @@
 
 # default base image
 ARG BASE_IMAGE="pytorch_xpu_base:ubuntu2410_20250410"
-ARG SG_LANG_REPO=https://github.com/sgl-project/sglang.git
-ARG SG_LANG_BRANCH=main
-
 
 FROM $BASE_IMAGE AS base
 USER root
 
 # Set environment variables
+
+ARG SG_LANG_REPO=https://github.com/sgl-project/sglang.git
+ARG SG_LANG_BRANCH=main
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHON_VERSION=3.10
