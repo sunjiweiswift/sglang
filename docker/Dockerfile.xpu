@@ -67,6 +67,7 @@ RUN --mount=type=secret,id=github_token \
     VLLM_TARGET_DEVICE=xpu python setup.py install && \
     # Install SGlang from source
     cd /root && \
+    echo "cloning ${SG_LANG_BRANCH} from ${SG_LANG_REPO}"
     git clone --branch ${SG_LANG_BRANCH} --single-branch ${SG_LANG_REPO} && \
     cd sglang && \
     pip install -e "python[all_xpu]" --root-user-action=ignore && \
