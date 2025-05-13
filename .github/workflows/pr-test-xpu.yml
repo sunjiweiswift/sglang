@@ -1,6 +1,6 @@
 name: PR Test (XPU)
 
-
+on:
   pull_request:
     branches: [main, dev/intel_xpu_backend]
   workflow_dispatch:
@@ -10,7 +10,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-
   rebase-pr-branch:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: pvc-1100
@@ -37,7 +36,6 @@ jobs:
           git push origin HEAD:${{ github.event.pull_request.head.ref }} --force
   build-and-test:
     needs: rebase-pr-branch
-
     if: (github.repository == 'sgl-project/sglang' || github.event_name == 'pull_request') &&
       github.event.pull_request.draft == false
     runs-on: pvc-1100
@@ -56,6 +54,7 @@ jobs:
           --build-arg SG_LANG_REPO=${{ github.server_url }}/${{ github.event.pull_request.head.repo.full_name }}.git  \
           --build-arg SG_LANG_BRANCH=${{ github.head_ref || github.ref_name }} \
           -f ${{ github.workspace }}/docker/Dockerfile.xpu -t sglang_xpu:u2410 .
+
 
       - name: Run container
         run: |
