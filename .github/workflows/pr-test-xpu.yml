@@ -10,6 +10,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rebase-pr-branch:  
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: pvc-1100
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }} 
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebase PR branch onto target branch
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git fetch origin ${{ github.base_ref }} --depth=1
+          
+          git rebase origin/${{ github.base_ref }} || {
+            echo "Rebase failed, likely due to conflicts. Please rebase manually."
+            exit 1
+          }
+          
+          git push origin HEAD:${{ github.event.pull_request.head.ref }} --force
   build-and-test:
     if: (github.repository == 'sgl-project/sglang' || github.event_name == 'pull_request') &&
       github.event.pull_request.draft == false
