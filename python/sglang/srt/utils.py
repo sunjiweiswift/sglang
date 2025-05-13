@@ -65,12 +65,7 @@ from torch.func import functional_call
 from torch.library import Library
 from torch.profiler import ProfilerActivity, profile, record_function
 from torch.utils._contextlib import _DecoratorContextManager
-from triton.runtime.cache import (
-    FileCacheManager,
-    default_cache_dir,
-    default_dump_dir,
-    default_override_dir,
-)
+from triton.runtime.cache import FileCacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -796,17 +791,17 @@ class CustomCacheManager(FileCacheManager):
         self.key = key
         self.lock_path = None
         if dump:
-            self.cache_dir = default_dump_dir()
+            self.cache_dir = triton.knobs.cache.dump_dir
             self.cache_dir = os.path.join(self.cache_dir, self.key)
             self.lock_path = os.path.join(self.cache_dir, "lock")
             os.makedirs(self.cache_dir, exist_ok=True)
         elif override:
-            self.cache_dir = default_override_dir()
+            self.cache_dir = triton.knobs.cache.override_dir
             self.cache_dir = os.path.join(self.cache_dir, self.key)
         else:
             # create cache directory if it doesn't exist
             self.cache_dir = (
-                os.getenv("TRITON_CACHE_DIR", "").strip() or default_cache_dir()
+                os.getenv("TRITON_CACHE_DIR", "").strip() or triton.knobs.cache.dir
             )
             if self.cache_dir:
                 self.cache_dir = f"{self.cache_dir}_{os.getpid()}"
@@ -1266,7 +1261,7 @@ def get_device_memory_capacity(device: str = None):
     elif device == "hpu":
         gpu_mem = get_hpu_memory_capacity()
     elif device == "xpu":
-        gpu_mem = torch.xpu.det_device_properties().total_memory
+        gpu_mem = torch.xpu.get_device_properties().total_memory
     else:
         # Only CPU available
         gpu_mem = psutil.virtual_memory().total
