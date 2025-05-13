@@ -66,7 +66,7 @@ RUN --mount=type=secret,id=github_token \
     unzip $ARTIFACT_NAME.zip -d $TEMP_DIR && \
     echo  "Installing Triton wheels..." && \
     pip install $TEMP_DIR/*.whl --root-user-action=ignore && \
-    rm -rf $TEMP_DIR && \  
+    rm -rf $TEMP_DIR && \
     # Install vllm from source
     cd /root && \
     . /opt/intel/oneapi/setvars.sh && \
