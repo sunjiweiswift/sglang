@@ -1,8 +1,8 @@
 name: PR Test (XPU)
 
 on:
-  push:
   pull_request:
+    branches: [main, dev/intel_xpu_backend]
   workflow_dispatch:
 
 concurrency:
