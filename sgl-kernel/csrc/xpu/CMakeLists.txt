@@ -70,6 +70,8 @@ endif()
 include_directories(
     ${PROJECT_SOURCE_DIR}/../../include
     ${PROJECT_SOURCE_DIR}/../../csrc
+    ${PROJECT_SOURCE_DIR}/../../csrc/xpu/cutlass_sycl/include
+    ${PROJECT_SOURCE_DIR}/../../csrc/xpu/cutlass_sycl/applications
     ${repo-cutlass-fork_SOURCE_DIR}/include
     ${repo-cutlass-fork_SOURCE_DIR}/tools/util/include
 )
