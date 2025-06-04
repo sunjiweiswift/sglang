@@ -35,8 +35,11 @@
 #include "cutlass/gemm/gemm.h"
 #include "cutlass/kernel_hardware_info.hpp"
 
-#include "flash_attention_v2/collective/xe_flash_attn_prefill_mma.hpp"
+#include "cute/numeric/integral_constant.hpp"
 
+#include "flash_attention_v2/collective/xe_flash_attn_prefill_mma.hpp"
+#include "flash_attention_v2/kernel/tile_scheduler.hpp"
+using namespace cute;
 namespace cutlass::flash_attention::kernel {
 
 template <class ProblemShape, class CollectiveMainloop, class CollectiveSoftmaxEpilogue_, class CollectiveEpilogue, class TileScheduler_ = void>
@@ -78,7 +81,7 @@ public:
   using SoftmaxParams = typename CollectiveSoftmaxEpilogue::Params;
   
   static_assert(cute::is_void_v<TileScheduler_> or cute::is_same_v<TileScheduler_, PersistentScheduler> or 
-    cute::is_same_v<TileScheduler_, IndividualScheduler>, "Unsupported TileScheduler for Intel Xe.");
+    cute::is_same_v<TileScheduler_, IndividualScheduler>, "Unsupported TileScheduler for cute::Intel Xe.");
   using TileSchedulerTag = TileScheduler_;
   using TileScheduler = typename detail::TileSchedulerSelector<TileScheduler_, ArchTag>::Scheduler;
   using TileSchedulerParams = typename TileScheduler::Params;
@@ -129,7 +132,7 @@ public:
   static constexpr int FragsN = CollectiveMainloop::FragsNS; 
 
   static constexpr int VSlicer = get<1>(TileShapeOutput{})/(get<1>(TileShapePV{})* PV_ATOM_N); //ceil_div(FragsNOut,FragsNS);
-  using AccumeShape =  decltype(make_shape(Int<Vec>{}, Int<FragsM>{}, get<1>(TileShapePV{})/get<1>(MmaAtomShape()), Int<VSlicer>{}));
+  using AccumeShape =  decltype(make_shape(cute::Int<Vec>{}, cute::Int<FragsM>{}, get<1>(TileShapePV{})/get<1>(MmaAtomShape()), cute::Int<VSlicer>{}));
 
   static constexpr bool is_var_len = CollectiveMainloop::is_var_len;
 
@@ -279,9 +282,9 @@ public:
       auto mainloop_params = CollectiveMainloop::get_updated_copies(params.mainloop, params.problem_shape, sequence_length_shape, batch_coord);
       // we limit the horisontal size to two subgroup, the empirical resutls show that reading the two cacheline side by side in gives better performance and 
       // anything after that does not have an effect on performance. // (64 here for float b float when possible and loop over to cover all the data needed)
-      auto tiled_prefetch_q = cute::prefetch_selector<Shape<Int<QK_BLK_M>, Int<cute::max(cute::gcd(QK_BLK_K, 64), 32)>>, Num_SGs>(mainloop_params.gmem_tiled_copy_q);
-      auto tiled_prefetch_k = cute::prefetch_selector<Shape<Int<QK_BLK_N>, Int<cute::max(cute::gcd(QK_BLK_K, 64), 32)>>, Num_SGs>(mainloop_params.gmem_tiled_copy_k);
-      auto tiled_prefetch_v = cute::prefetch_selector<Shape<Int<cute::max(cute::gcd(Epilogue_BLK_N, 64), 32)>, Int<Epilogue_BLK_K>>, Num_SGs>(mainloop_params.gmem_tiled_copy_v);
+      auto tiled_prefetch_q = cute::prefetch_selector<Shape<cute::Int<QK_BLK_M>, cute::Int<cute::max(cute::gcd(QK_BLK_K, 64), 32)>>, Num_SGs>(mainloop_params.gmem_tiled_copy_q);
+      auto tiled_prefetch_k = cute::prefetch_selector<Shape<cute::Int<QK_BLK_N>, cute::Int<cute::max(cute::gcd(QK_BLK_K, 64), 32)>>, Num_SGs>(mainloop_params.gmem_tiled_copy_k);
+      auto tiled_prefetch_v = cute::prefetch_selector<Shape<cute::Int<cute::max(cute::gcd(Epilogue_BLK_N, 64), 32)>, cute::Int<Epilogue_BLK_K>>, Num_SGs>(mainloop_params.gmem_tiled_copy_v);
       auto thr_prefetch_Q = tiled_prefetch_q.get_slice(thread_idx);
       auto thr_prefetch_K = tiled_prefetch_k.get_slice(thread_idx);
       auto thr_prefetch_V = tiled_prefetch_v.get_slice(thread_idx);
@@ -306,7 +309,7 @@ public:
       // max per subgroup
       ElementAccumulator max_reg{-INFINITY};
       // The sum reg each contains a 2d tesnor for 8 x 2 This is number of sequence lenght process per subgroup
-      Tensor sum_reg = make_tensor<ElementAccumulator>(Shape<Int<Vec>, Int<FragsM>>{});
+      Tensor sum_reg = make_tensor<ElementAccumulator>(Shape<cute::Int<Vec>, cute::Int<FragsM>>{});
 
       clear(sum_reg);
       clear(out_reg);
@@ -321,7 +324,7 @@ public:
         barrier_arrive(barrier_scope);
         // 1) Load K (performed inside mmaQK)
         // 2) Create Tensor S
-        Tensor tSr = make_tensor<ElementAccumulator>(Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{});
+        Tensor tSr = make_tensor<ElementAccumulator>(Shape<cute::Int<Vec>, cute::Int<FragsM>, cute::Int<FragsN>>{});
         clear(tSr);
 
         // 3) Perform GEMM S = Q*K
@@ -350,7 +353,7 @@ public:
         // BAND Matrix
         // 1) Load K (performed inside mmaQK)
         // 2) Create Tensor S
-        Tensor tSr = make_tensor<ElementAccumulator>(Shape<Int<Vec>, Int<FragsM>, Int<FragsN>>{});
+        Tensor tSr = make_tensor<ElementAccumulator>(Shape<cute::Int<Vec>, cute::Int<FragsM>, cute::Int<FragsN>>{});
         clear(tSr);
         // 3) Perform GEMM S = Q*K
         collective_mma.mmaQK(tSr, gQ,  gK(_, _, nblock_limit - 1, _), tSr, ceil_div(head_size_qk, QK_BLK_K), mainloop_params);

@@ -33,16 +33,21 @@ operator_namespace = "sgl_kernel"
 include_dirs = [
     root / "include",
     root / "csrc",
+    root / "csrc/xpu/cutlass_sycl",
+    root / "csrc/xpu/cutlass_sycl/applications",
+    root / "csrc/xpu/cutlass_sycl/include",
+    root / "csrc/xpu/cutlass_sycl/tools/util/include",
 ]
 
 sources = [
+    "csrc/xpu/flash_attention_prefill.sycl",
     "csrc/xpu/awq_dequantize.sycl",
     "csrc/xpu/torch_extension_sycl.cc",
 ]
 
 extra_compile_args = {
-    "cxx": ["-O3", "-std=c++17"],
-    "sycl": ["-fsycl", "-ffast-math", "-fsycl-device-code-split=per_kernel"],
+    "cxx": ["-O3", "-std=c++17", "-DCUTLASS_ENABLE_SYCL=ON", "-DSYCL_INTEL_TARGET"],
+    "sycl": ["-fsycl", "-ffast-math", "-fsycl-device-code-split=per_kernel", "-DCUTLASS_ENABLE_SYCL=ON", "-DSYCL_INTEL_TARGET"],
 }
 
 extra_link_args = ["-Wl,-rpath,$ORIGIN/../../torch/lib", "-L/usr/lib/x86_64-linux-gnu"]
