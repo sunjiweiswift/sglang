@@ -1,3 +1,35 @@
+/***************************************************************************************************
+ * Copyright (c) 2024 - 2025 Codeplay Software Ltd. All rights reserved.
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ * list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ **************************************************************************************************/
+#pragma once
+
 #include "cutlass/epilogue/collective/default_epilogue.hpp"
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
@@ -9,146 +41,428 @@
 #include "cutlass/util/GPU_Clock.hpp"
 #include "cutlass/util/sycl_event_manager.hpp"
 
-// #include <ATen/ATen.h>
-// #include <ATen/Parallel.h>
-// #include <c10/xpu/XPUStream.h>
-// #include <torch/all.h>
-// #include <torch/python.h>
+#include <cute/tensor.hpp>
+#include <random>
 
-// #include <cmath>
-// #include <cstdint>
-// #include <iostream>
-// #include <sycl/sycl.hpp>
-// #include <vector>
+#include "/home/sunjiwei/code/sglang/sgl-kernel/csrc/xpu/cutlass-sycl/examples/common/helper.h"
+#include "cutlass/util/command_line.h"
+#include "cutlass/util/device_memory.h"
+#include "cutlass/util/reference/device/gemm_complex.h"
+#include "cutlass/util/reference/device/tensor_compare.h"
+#include "/home/sunjiwei/code/sglang/sgl-kernel/csrc/xpu/cutlass-sycl/examples/common/sycl_common.hpp"
 
-// #include "SYCLHelpers.h"
+using namespace cute;
 
-// std::vector<at::Tensor> flash_attention_v2(
-//     at::Tensor& q,        // (b, s_q, h, d) or (total_q, h, d) if there is cu_seqlens_q
-//     const at::Tensor& k,  // (b_k, s_k, h_k, d) or (total_k, h_k, d) if there is cu_seqlens_k or (num_pages,
-//     page_size,
-//                           // h_k, d) if there is page_table.
-//     const at::Tensor& v,  // (b_k, s_k, h_k, dv) or (total_k, h_k, dv) if there is cu_seqlens_k or (num_pages,
-//                           // page_size, h_k, dv) if there is page_table.
-//     std::optional<const at::Tensor>&
-//         k_new_,  // (b, s_k_new, h_k, d) or (total_k_new, h_k, d) if there is cu_seqlens_k_new
-//     std::optional<const at::Tensor>&
-//         v_new_,  // (b, s_k_new, h_k, dv) or (total_k_new, h_k, dv) if there is cu_seqlens_k_new
-//     std::optional<const at::Tensor>& q_v_,           // (b, s_q, h, dv) or (total_q_new, h, dv) if there is
-//     cu_seqlens_q std::optional<at::Tensor>& out_,                 // (b, s_q, h, dv) or (total_q, h, dv) if there is
-//     cu_seqlens_q std::optional<const at::Tensor>& cu_seqlens_q_,  // b+1 std::optional<const at::Tensor>&
-//     cu_seqlens_k_,  // b+1 std::optional<const at::Tensor>& cu_seqlens_k_new_,  // b+1 std::optional<const
-//     at::Tensor>&
-//         seqused_q_,  // b. If given, only this many elements of each batch element's queries and outputs are used.
-//     std::optional<const at::Tensor>&
-//         seqused_k_,  // b. If given, only this many elements of each batch element's keys are used.
-//     std::optional<int> max_seqlen_q_,
-//     // TODO: check if we need max_seqlen_k
-//     std::optional<int> max_seqlen_k_,
-//     std::optional<const at::Tensor>& page_table_,      // (b_k, max_num_pages_per_seq)
-//     std::optional<const at::Tensor>& kv_batch_idx_,    // b. indices to index into the KV cache
-//     std::optional<const at::Tensor>& leftpad_k_,       // b
-//     std::optional<const at::Tensor>& rotary_cos_,      // seqlen_ro x (rotary_dim / 2)
-//     std::optional<const at::Tensor>& rotary_sin_,      // seqlen_ro x (rotary_dim / 2)
-//     std::optional<const at::Tensor>& seqlens_rotary_,  // b
-//     std::optional<at::Tensor>& q_descale_,             // (b, h_k), not (b, h)
-//     std::optional<at::Tensor>& k_descale_,             // (b, h_k)
-//     std::optional<at::Tensor>& v_descale_,             // (b, h_k)
-//     float const softmax_scale,
-//     bool is_causal,
-//     int window_size_left,
-//     int window_size_right,
-//     float const softcap,
-//     bool const is_rotary_interleaved,  // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
-//     std::optional<at::Tensor>& scheduler_metadata_,  // (b + 1)
-//     int num_splits,
-//     std::optional<bool> pack_gqa_,
-//     int const sm_margin) {}
-template <typename DispatchPolicy, typename input, typename output>
-struct MMAOP {
-  static_assert(
-      cutlass::detail::dependent_false<DispatchPolicy>,
-      "Could not find a supported MMA ATOM Operation for flash attention");
+// Command line options parsing
+struct Options {
+
+  bool help;
+  bool error;
+  bool is_causal;
+  bool varlen = false;
+  std::string scheduler;
+
+  int batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, head_size_qk, head_size_vo, iterations;
+  float softmax_scale;
+
+  Options()
+      : help(false), error(false), is_causal(false), varlen(false), batch(32), num_heads_q(16), num_heads_kv(16), seq_len_qo(512), head_size_qk(128),
+        seq_len_kv(512), head_size_vo(128), iterations(100), softmax_scale(1.f), scheduler("Individual") {}
+
+  // Parses the command line
+  void parse(int argc, char const **args) {
+    cutlass::CommandLine cmd(argc, args);
+
+    if (cmd.check_cmd_line_flag("help")) {
+      help = true;
+      return;
+    }
+
+    if (cmd.check_cmd_line_flag("is_causal")) {
+      is_causal = true;
+    }
+
+    if (cmd.check_cmd_line_flag("varlen")) {
+      varlen = true;
+    }
+
+    cmd.get_cmd_line_argument("scheduler", scheduler, std::string("Individual"));
+
+    cmd.get_cmd_line_argument("batch", batch, 32);
+    cmd.get_cmd_line_argument("num_heads_q", num_heads_q, 16);
+    cmd.get_cmd_line_argument("num_heads_kv", num_heads_kv, num_heads_q);
+    cmd.get_cmd_line_argument("seq_len_qo", seq_len_qo, 512);
+    cmd.get_cmd_line_argument("seq_len_kv", seq_len_kv, seq_len_qo);
+    cmd.get_cmd_line_argument("head_size_vo", head_size_vo, 128);
+    cmd.get_cmd_line_argument("head_size_qk", head_size_qk, head_size_vo);
+    cmd.get_cmd_line_argument("iterations", iterations, 100);
+
+    softmax_scale = 1 / sqrt(static_cast<float>(head_size_qk));
+  }
+
+  /// Prints the usage statement.
+  std::ostream &print_usage(std::ostream &out) const {
+
+    out << "BMG Flash Attention v2 Example\n\n"
+        << "Options:\n\n"
+        << "  --help                      If specified, displays this usage statement\n\n"
+        << "  --is_causal                 Apply Causal Mask to the output of first Matmul\n"
+        << "  --varlen                    Enable variable sequence length\n"
+        << "  --scheduler=\"Value\"       Choose between Individual or Persistent Scheduler\n"
+        << "  --batch=<int>               Sets the Batch Size of the Multi-Head Self Attention module\n"
+        << "  --num_heads_q=<int>         Sets the Number of Attention Heads for Key-Value pair the Multi-Head Self Attention module\n"
+        << "  --num_heads_kv=<int>        Sets the Number of Attention Heads for Query input in the Multi-Head Self Attention module\n"
+        << "  --seq_len_qo=<int>          Sets the Sequence length of the Query input in Multi-Head Self Attention module\n"
+        << "  --seq_len_kv=<int>          Sets the Sequence length of the Key-Value pair in Multi-Head Self Attention module\n"
+        << "  --head_size_qk=<int>        Sets the Attention Head dimension of the 1st Matrix Multiplication in Multi-Head Self Attention module\n"
+        << "  --head_size_vo=<int>        Sets the Attention Head dimension of the 2nd Matrix Multiplication in Multi-Head Self Attention module\n"
+        << "  --iterations=<int>          Iterations\n\n";
+
+    return out;
+  }
 };
 
-template <typename DispatchPolicy>
-struct MMAOP<DispatchPolicy, bfloat16_t, float> {
-  using Type = cute::XE_8x16x16_F32BF16BF16F32_TT;
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Flash Attention takes 3 input matrices: (K)eys, (Q)ueries and (V)alues.
+using LayoutQ = cutlass::layout::RowMajor;
+using LayoutK = cutlass::layout::ColumnMajor;
+using LayoutV = cutlass::layout::RowMajor;
+using LayoutO = cutlass::layout::RowMajor;
+
+template <class FMHAPrefillKernel, bool isVarLen> struct ExampleRunner {
+
+  using StrideQ = typename FMHAPrefillKernel::StrideQ;
+  using StrideK = typename FMHAPrefillKernel::StrideK;
+  using StrideV = typename FMHAPrefillKernel::StrideV;
+  using StrideO = typename FMHAPrefillKernel::StrideO;
+
+  using ElementQ = typename FMHAPrefillKernel::ElementQ;
+  using ElementK = typename FMHAPrefillKernel::ElementK;
+  using ElementV = typename FMHAPrefillKernel::ElementV;
+  using ElementAcc = typename FMHAPrefillKernel::ElementAccumulator;
+
+  using CollectiveEpilogue = typename FMHAPrefillKernel::CollectiveEpilogue;
+  using ElementOutput = typename CollectiveEpilogue::ElementOutput;
+  using ElementCompute = typename CollectiveEpilogue::ElementCompute;
+  using ElementAccumulator = typename CollectiveEpilogue::ElementAccumulator;
+
+  using ProblemShapeType = typename FMHAPrefillKernel::ProblemShape;
+
+  //
+  // Data members
+  //
+
+  /// Initialization
+  StrideQ stride_Q;
+  StrideK stride_K;
+  StrideV stride_V;
+  StrideO stride_O;
+  uint64_t seed = 0;
+
+  cutlass::DeviceAllocation<ElementQ> block_Q;
+  cutlass::DeviceAllocation<ElementK> block_K;
+  cutlass::DeviceAllocation<ElementV> block_V;
+  cutlass::DeviceAllocation<ElementOutput> block_O;
+  cutlass::DeviceAllocation<ElementOutput> block_ref_O;
+
+  std::vector<int> cumulative_seqlen_q;
+  std::vector<int> cumulative_seqlen_kv;
+  cutlass::DeviceAllocation<int> device_cumulative_seqlen_q;
+  cutlass::DeviceAllocation<int> device_cumulative_seqlen_kv;
+
+  //
+  // Methods
+  //
+
+  template<class ProblemShape>
+  auto initialize_varlen(const ProblemShape& problem_size) {
+    int num_batches = get<0>(problem_size);
+
+    // generate Q as --b times
+    //    gaussian (--Q, --Q / 2) sampled positive
+    //    track cumulative 
+    std::mt19937 rng(0x202305151552ull);
+    std::normal_distribution<double> dist_q(get<3>(problem_size), get<3>(problem_size) / 2);
+    std::normal_distribution<double> dist_kv(get<4>(problem_size), get<4>(problem_size) / 2);
+
+    // Use Cacheline Size to calculate alignment
+    constexpr int cacheline_bytes = 64;
+    constexpr int AlignmentQ = cacheline_bytes / sizeof(ElementQ);    // Alignment of Q matrix in units of elements
+    constexpr int AlignmentKV = cacheline_bytes / sizeof(ElementK);   // Alignment of Kand V matrix in units of elements
+
+    auto generate_positive_int = [](auto& dist, auto& gen) {
+      int result = 0;
+      do {
+        result = static_cast<int>(dist(gen));
+      } while (result <= 0);
+      return result;
+    };
+
+    cumulative_seqlen_q = {0};
+    cumulative_seqlen_kv = {0};
+
+    int total_seqlen_q = 0;
+    int total_seqlen_kv = 0;
+    int max_seqlen_q = 0;
+    int max_seqlen_kv = 0;
+
+    for (int i = 0; i < num_batches; i++) {
+      int seqlen_q = cutlass::round_up(generate_positive_int(dist_q, rng), AlignmentQ);
+      int seqlen_kv = cutlass::round_up(generate_positive_int(dist_kv, rng), AlignmentKV);
+
+      total_seqlen_q += seqlen_q;
+      total_seqlen_kv += seqlen_kv;
+
+      max_seqlen_q = std::max(max_seqlen_q, seqlen_q);
+      max_seqlen_kv = std::max(max_seqlen_kv, seqlen_kv);
+
+      cumulative_seqlen_q.push_back(cumulative_seqlen_q.back() + seqlen_q);
+      cumulative_seqlen_kv.push_back(cumulative_seqlen_kv.back() + seqlen_kv);
+    }
+
+    ProblemShape problem_size_for_init = problem_size;
+    get<0>(problem_size_for_init) = 1;
+    get<3>(problem_size_for_init) = total_seqlen_q;
+    get<4>(problem_size_for_init) = total_seqlen_kv;
+
+    ProblemShapeType problem_size_for_launch;
+
+    get<3>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_q};
+    get<4>(problem_size_for_launch) = cutlass::fmha::collective::VariableLength{max_seqlen_kv};
+    get<5>(problem_size_for_launch) = get<5>(problem_size);
+    get<6>(problem_size_for_launch) = get<6>(problem_size);
+    get<0>(problem_size_for_launch) = get<0>(problem_size);
+    get<1>(problem_size_for_launch) = get<1>(problem_size);
+    get<2>(problem_size_for_launch) = get<2>(problem_size);
+
+
+    return cute::make_tuple(problem_size_for_init, problem_size_for_launch);
+  }
+
+  /// Initialize operands to be used in the GEMM and reference GEMM
+  ProblemShapeType initialize(const Options &options) {
+    auto problem_shape_in =
+        cute::make_tuple(options.batch, options.num_heads_q, options.num_heads_kv, options.seq_len_qo, options.seq_len_kv, options.head_size_qk, options.head_size_vo);
+
+    ProblemShapeType problem_shape;
+    decltype(problem_shape_in) problem_size;
+
+    if constexpr (isVarLen) {
+      auto [problem_shape_init, problem_shape_launch] = initialize_varlen(problem_shape_in);
+      problem_shape = problem_shape_launch;
+      problem_size = problem_shape_init;
+    }
+    else {
+      problem_size = problem_shape_in;
+      problem_shape = problem_shape_in;
+    }
+
+    auto [batch, num_heads_q, num_heads_kv, seq_len_qo, seq_len_kv, head_size_qk, head_size_vo] = problem_size;
+
+    stride_Q = cutlass::make_cute_packed_stride(StrideQ{}, cute::make_shape(seq_len_qo, head_size_qk, batch * num_heads_q));
+    stride_K = cutlass::make_cute_packed_stride(StrideK{}, cute::make_shape(seq_len_kv, head_size_qk, batch * num_heads_kv));
+    stride_V = cutlass::make_cute_packed_stride(StrideV{}, cute::make_shape(head_size_vo, seq_len_kv, batch * num_heads_kv));
+    stride_O = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, head_size_vo, batch * num_heads_q));
+
+    block_Q.reset(static_cast<std::size_t>(batch) * num_heads_q * seq_len_qo * head_size_qk);
+    block_K.reset(static_cast<std::size_t>(batch) * num_heads_kv * seq_len_kv * head_size_qk);
+    block_V.reset(static_cast<std::size_t>(batch) * num_heads_kv * seq_len_kv * head_size_vo);
+    block_O.reset(static_cast<std::size_t>(batch) * num_heads_q * seq_len_qo * head_size_vo);
+    block_ref_O.reset(static_cast<std::size_t>(batch) * num_heads_q * seq_len_qo * head_size_vo);
+
+    initialize_block(block_Q, seed + 2023);
+    initialize_block(block_K, seed + 2022);
+    initialize_block(block_V, seed + 2021);
+
+    if (!cumulative_seqlen_q.empty()) {
+      device_cumulative_seqlen_q.reset(cumulative_seqlen_q.size());
+      device_cumulative_seqlen_q.copy_from_host(
+        cumulative_seqlen_q.data(), cumulative_seqlen_q.size());
+    }
+    if (!cumulative_seqlen_kv.empty()) {
+      device_cumulative_seqlen_kv.reset(cumulative_seqlen_kv.size());
+      device_cumulative_seqlen_kv.copy_from_host(
+        cumulative_seqlen_kv.data(), cumulative_seqlen_kv.size());
+    }
+
+    if constexpr (isVarLen) {
+      get<3>(problem_shape).cumulative_length = device_cumulative_seqlen_q.get();
+      get<4>(problem_shape).cumulative_length = device_cumulative_seqlen_kv.get();
+    }
+
+    return problem_shape;
+  }
+
+  // Note that the GemmUniversalAdapter currently doesn't support flash attention, which is why this
+  // secondary `run` function is required to launch the kernel.
+  static void run(typename FMHAPrefillKernel::Params params) {
+    dim3 const block = FMHAPrefillKernel::get_block_shape();
+    dim3 const grid = FMHAPrefillKernel::get_grid_shape(params);
+
+    // configure smem size and carveout
+    int smem_size = FMHAPrefillKernel::SharedStorageSize;
+
+    const auto sycl_block = syclcompat::dim3(block.x, block.y, block.z);
+    const auto sycl_grid = syclcompat::dim3(grid.x, grid.y, grid.z);
+
+// Launch parameters depend on whether SYCL compiler supports work-group scratch memory extension
+#if !defined(SYCL_EXT_ONEAPI_WORK_GROUP_SCRATCH_MEMORY)
+    using namespace syclcompat::experimental;
+    auto event = launch<cutlass::device_kernel<FMHAPrefillKernel>>(
+        launch_policy{sycl_grid, sycl_block, local_mem_size{static_cast<std::size_t>(smem_size)},
+                      kernel_properties{sycl_exp::sub_group_size<FMHAPrefillKernel::DispatchPolicy::SubgroupSize>}},
+        params);
+#else
+    syclcompat::experimental::launch_properties launch_props {
+      sycl::ext::oneapi::experimental::work_group_scratch_size(smem_size),
+    };
+    syclcompat::experimental::kernel_properties kernel_props{
+      sycl::ext::oneapi::experimental::sub_group_size<FMHAPrefillKernel::DispatchPolicy::SubgroupSize>
+    };
+    syclcompat::experimental::launch_policy policy{sycl_grid, sycl_block, launch_props, kernel_props};
+    auto event = syclcompat::experimental::launch<cutlass::device_kernel<FMHAPrefillKernel>>(policy, params);
+#endif
+
+    EventManager::getInstance().addEvent(event);
+  }
+
+  cutlass::Status run(const Options &options, const cutlass::KernelHardwareInfo &hw_info) {
+
+    ProblemShapeType problem_size = initialize(options);
+
+    typename FMHAPrefillKernel::Arguments arguments{
+        cutlass::gemm::GemmUniversalMode::kGemm,
+        problem_size,
+        {block_Q.get(), stride_Q, block_K.get(), stride_K, block_V.get(), stride_V},
+        {options.softmax_scale},
+        {block_O.get(), stride_O},
+        hw_info};
+
+    // Define device-global scratch memory
+    size_t workspace_size = FMHAPrefillKernel::get_workspace_size(arguments);
+    cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+
+    if (!FMHAPrefillKernel::can_implement(arguments)) {
+      std::cout << "Invalid Problem Size: " << options.batch << 'x' << options.num_heads_q << 'x' <<
+        options.seq_len_qo << 'x' << options.seq_len_kv << 'x' << options.head_size_qk << 'x'  << options.head_size_vo 
+        << (options.is_causal ? "xCausal" : "xNonCausal") << std::endl;
+      return cutlass::Status::kErrorInvalidProblem;
+    }
+
+    // Initialize the workspace
+    CUTLASS_CHECK(FMHAPrefillKernel::initialize_workspace(arguments, workspace.get()));
+
+    // Convert host-side arguments to device-side arguments to be passed to the kernel
+    auto params = FMHAPrefillKernel::to_underlying_arguments(arguments, workspace.get());
+
+    // Run the GEMM
+    run(params);
+
+    syclcompat::wait();
+
+    // Verify that the result is correct
+    // bool passed = verify(problem_size, options.is_causal);
+    // std::cout << "Disposition: " << (passed ? "Passed" : "Failed") << std::endl;
+
+    // if (!passed) {
+    //   return cutlass::Status::kErrorInternal;
+    // }
+
+    if (options.iterations > 0) {
+      GPU_Clock timer;
+      timer.start();
+      for (int i = 0; i < options.iterations; ++i) {
+        run(params);
+      }
+      syclcompat::wait();
+    // when seq_len_qo is not equal to seq_len_kv we use bottom up approach for the masking. 
+      // Following changes will adjust the effective_seq_len_kv when masking applied for such cases
+      auto offset = cute::min(options.seq_len_qo, options.seq_len_kv);
+      auto discard_seq_coord = options.seq_len_qo - offset;
+      auto full_tile_offset = options.seq_len_kv - offset;
+      // offset + 1 is going to be ceil_div
+      auto effective_seq_len_kv = options.is_causal ? full_tile_offset + ((offset + 1) / 2.0): options.seq_len_kv;
+      auto effective_seq_len_qo = options.is_causal ? options.seq_len_qo - discard_seq_coord : options.seq_len_qo;
+      double cute_time = timer.seconds() / options.iterations;
+      double flops_qk = 2.0 * options.batch * options.num_heads_q * effective_seq_len_qo * effective_seq_len_kv * options.head_size_qk;
+      double flops_pv = 2.0 *  options.batch * options.num_heads_q * effective_seq_len_qo * options.head_size_vo * effective_seq_len_kv;
+      double tflops = ((flops_qk + flops_pv) * 1e-12) / cute_time;
+      double gbps_qk =  options.batch * (sizeof(ElementQ) * options.num_heads_q * effective_seq_len_qo * options.head_size_qk + 
+                                         sizeof(ElementK) * options.num_heads_kv * effective_seq_len_kv * options.head_size_qk);
+      double gbps_pv = sizeof(ElementV) * options.batch * options.num_heads_kv * effective_seq_len_kv * options.head_size_vo +
+                     sizeof(ElementOutput) * options.batch * options.num_heads_q * effective_seq_len_qo * options.head_size_vo;
+      double gbps = ((gbps_qk + gbps_pv)  * 1e-9) / (cute_time);
+      std::cout << "Batch: " << options.batch << "\tNumHeads_q: " << options.num_heads_q  << "\tNumHeads_kv: " << options.num_heads_kv  << "\tSeq Length QO: " << options.seq_len_qo
+                << "\tSeq Length KV: " << options.seq_len_kv << "\tHead Size QK: " << options.head_size_qk << "\tHead Size VO: " << options.head_size_vo
+                << "\tCausal Mask: " << (options.is_causal ? "true" : "false") << "\tVariable Sequence Length: " << (options.varlen ? "true" : "false")
+                << "\t Scheduler: " << options.scheduler;
+      printf("\nPerformance:   %4.3f  GB/s,    %4.3f  TFlop/s,   %6.4f  ms\n\n", gbps, tflops, cute_time * 1000);
+    }
+
+    return cutlass::Status::kSuccess;
+  }
 };
 
-template <typename DispatchPolicy>
-struct MMAOP<DispatchPolicy, half_t, float> {
-  using Type = cute::XE_8x16x16_F32F16F16F32_TT;
-};
+template <bool Causal, typename TileShapeQK, typename TileShapePV, typename TileShapeOutput, typename SubgroupLayout, int PipelineStages> struct FMHAConfig {
 
-template <
-    typename ElementInputType,
-    typename ElementAccumulatorType,
-    typename ElementOutputType,
-    typename GmemTiledCopyQ,
-    typename GmemTiledCopyK,
-    typename GmemTiledCopyV,
-    typename GmemTiledCopyO,
-    typename TileShapeQK,
-    typename TileShapePV,
-    typename TileShapeOutput,
-    typename SubgroupLayout,
-    bool HasCausal,
-    bool IsVarLen,
-    int PipelineStages>
-struct FMHAPrefillConfig {
-  using ElementOutput = ElementOutputType;            // <- data type of output
-  using ElementInputQ = ElementInputType;             // <- data type of elements in input matrix Q
-  using ElementInputK = ElementInputType;             // <- data type of elements in input matrix K
-  using ElementInputV = ElementInputType;             // <- data type of elements in input matrix V
-  using ElementAccumulator = ElementAccumulatorType;  // <- data type of accumulator for mma operation
-  using LayoutQ = cutlass::layout::RowMajor;
-  using LayoutK = cutlass::layout::ColumnMajor;
-  using LayoutV = cutlass::layout::RowMajor;
-  using LayoutO = cutlass::layout::RowMajor;
-  static constexpr bool Causal = HasCausal;
-  static constexpr bool VarLen = IsVarLen;
-  using GEMMDispatchPolicy = cutlass::gemm::MainloopIntelXeXMX16<PipelineStages>;
-  using EpilogueDispatchPolicy = cutlass::epilogue::IntelXeXMX16;
-  //   using MMAOperation = XE_8x16x16_F32BF16BF16F32_TT;
-  using MMAOperation = typename MMAOP<GEMMDispatchPolicy, ElementInputType, ElementAccumulator>::Type;
-  using CollectiveEpilogue = cutlass::flash_attention::collective::FlashPrefillEpilogue<
-      EpilogueDispatchPolicy,
-      MMAOperation,
-      TileShapeOutput,
-      SubgroupLayout,
-      ElementAccumulator,
-      cutlass::gemm::TagToStrideC_t<LayoutO>,
-      ElementOutput,
-      GmemTiledCopyO>;
+  template <bool isVarLen, class Scheduler>
+  static int run(const Options &options) {
+    //
+    // Run examples
+    //
 
-  using CollectiveSoftmaxEpilogue = cutlass::flash_attention::collective::
-      FlashPrefillSoftmaxEpilogue<Causal, EpilogueDispatchPolicy, ElementAccumulator>;
+    // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
+    // information is used by the underlying kernel.
+    cutlass::KernelHardwareInfo hw_info;
 
-  using ProblemShapeRegular = cute::tuple<int, int, int, int, int, int, int>;
-  using ProblemShapeVarlen =
-      cute::tuple<int, int, int, cutlass::fmha::collective::VariableLength, cutlass::fmha::collective::VariableLength, int, int>;
-  using ProblemShapeType = std::conditional_t<VarLen, ProblemShapeVarlen, ProblemShapeRegular>;
+    // The code section below describes datatype for input, output matrices and computation between
+    // elements in input matrices.
+    using ElementAccumulator = float;     // <- data type of accumulator
+    using ElementComputeEpilogue = float; // <- data type of epilogue operations
+    using ElementInputQ = bfloat16_t;     // <- data type of elements in input matrix A
+    using ElementInputKV = bfloat16_t;    // <- data type of elements in input matrix B
+    using ElementOutput = float;          // <- data type of elements in output matrix D
+    using GEMMDispatchPolicy = cutlass::gemm::MainloopIntelXeXMX16<PipelineStages>;
+    using EpilogueDispatchPolicy = cutlass::epilogue::IntelXeXMX16;
+    using MMAOperation = XE_8x16x16_F32BF16BF16F32_TT;
+    using GmemTiledCopyQ = XE_2D_U16x8x32_LD_N;
+    using GmemTiledCopyK = XE_2D_U16x16x16_LD_T; // _T designates a transposed block load operation
+    using GmemTiledCopyV = XE_2D_U16x16x32_LD_V;
+    using GmemTiledCopyStore = XE_2D_U32x8x16_ST_N;
+    using CollectiveEpilogue = cutlass::flash_attention::collective::FlashPrefillEpilogue<
+        EpilogueDispatchPolicy, MMAOperation, TileShapeOutput, SubgroupLayout, ElementAccumulator, cutlass::gemm::TagToStrideC_t<LayoutO>, ElementOutput,
+        GmemTiledCopyStore>;
+    using CollectiveSoftmaxEpilogue = cutlass::flash_attention::collective::FlashPrefillSoftmaxEpilogue<Causal, EpilogueDispatchPolicy, ElementAccumulator>;
 
-  // Mainloop
-  using CollectiveMainloop = cutlass::flash_attention::collective::FlashPrefillMma<
-      GEMMDispatchPolicy,
-      ProblemShapeType,
-      ElementInputQ,
-      cutlass::gemm::TagToStrideA_t<LayoutQ>,
-      ElementInputK,
-      cutlass::gemm::TagToStrideB_t<LayoutK>,
-      ElementInputV,
-      cutlass::gemm::TagToStrideB_t<LayoutV>,
-      MMAOperation,
-      TileShapeQK,
-      TileShapePV,
-      SubgroupLayout,
-      GmemTiledCopyQ,
-      GmemTiledCopyK,
-      GmemTiledCopyV,
-      Causal>;
+    using ProblemShapeRegular = cute::tuple<int, int, int, int, int, int, int>;
+    using namespace cutlass::fmha::collective;
+    using ProblemShapeVarlen = cute::tuple<int, int, int, VariableLength, VariableLength, int, int>;
+    using ProblemShapeType = std::conditional_t<isVarLen, ProblemShapeVarlen, ProblemShapeRegular>;
 
-  using GemmKernel = cutlass::flash_attention::kernel::
-      FMHAPrefill<ProblemShapeType, CollectiveMainloop, CollectiveSoftmaxEpilogue, CollectiveEpilogue>;
+    // Mainloop
+    using CollectiveMainloop = cutlass::flash_attention::collective::FlashPrefillMma<
+        GEMMDispatchPolicy, ProblemShapeType, ElementInputQ, cutlass::gemm::TagToStrideA_t<LayoutQ>, ElementInputKV,
+        cutlass::gemm::TagToStrideB_t<LayoutK>, ElementInputKV, cutlass::gemm::TagToStrideB_t<LayoutV>, MMAOperation, TileShapeQK, TileShapePV, SubgroupLayout,
+        GmemTiledCopyQ, // Q
+        GmemTiledCopyK, // K
+        GmemTiledCopyV, // V,
+        Causal>;
+
+    using FMHAPrefillKernel = cutlass::flash_attention::kernel::FMHAPrefill<ProblemShapeType, CollectiveMainloop,
+                                                                     CollectiveSoftmaxEpilogue, CollectiveEpilogue, Scheduler>;
+
+    ExampleRunner<FMHAPrefillKernel, isVarLen> runner;
+
+    CUTLASS_CHECK(runner.run(options, hw_info));
+    return 0;    
+  }
+
+  static int run(const Options &options) {
+    if(options.varlen) {
+        return run<true, cutlass::flash_attention::IndividualScheduler>(options);
+    } else {
+        return run<false, cutlass::flash_attention::IndividualScheduler>(options);
+    }
+  }
 };

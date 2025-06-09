@@ -34,9 +34,9 @@ include_dirs = [
     root / "include",
     root / "csrc",
     root / "csrc/xpu/cutlass_sycl",
-    root / "csrc/xpu/cutlass_sycl/applications",
-    root / "csrc/xpu/cutlass_sycl/include",
-    root / "csrc/xpu/cutlass_sycl/tools/util/include",
+    root / "csrc/xpu/cutlass-sycl/applications",
+    root / "csrc/xpu/cutlass-sycl/include",
+    root / "csrc/xpu/cutlass-sycl/tools/util/include"
 ]
 
 sources = [
