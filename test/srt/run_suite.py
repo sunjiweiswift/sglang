@@ -126,6 +126,23 @@ suites = {
     "per-commit-8-gpu-amd": [
         TestFile("test_full_deepseek_v3.py", 250),
     ],
+    "per-commit-xpu-intel": [
+        TestFile("test_create_kvindices.py", 20),
+        TestFile("test_custom_allreduce.py", 20),
+        TestFile("test_fa3.py", 20),
+        TestFile("test_local_attn.py", 20),
+        TestFile("test_page_size.py", 250),
+        TestFile("test_penalty.py", 50),
+        TestFile("test_pytorch_sampling_backend.py", 250),
+        TestFile("test_radix_attention.py", 350),
+        TestFile("test_reasoning_content.py", 200),
+        TestFile("test_retract_decode.py", 500),
+        TestFile("test_sagemaker_server.py", 50),
+        TestFile("test_schedule_policy.py", 20),
+        TestFile("test_torch_tp.py", 50),
+        TestFile("test_triton_attention_backend.py", 250),
+        TestFile("test_triton_moe_channel_fp8_kernel.py", 20),
+    ],
     "nightly": [
         TestFile("test_nightly_gsm8k_eval.py"),
     ],

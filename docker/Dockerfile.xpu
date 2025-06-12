@@ -3,7 +3,7 @@
 
 
 # default base image
-ARG BASE_IMAGE="pytorch_xpu_base:pvc_base"
+ARG BASE_IMAGE="xpu_pvc:base"
 
 FROM $BASE_IMAGE AS base
 USER root
@@ -28,42 +28,7 @@ RUN --mount=type=secret,id=github_token \
     export PYTHON_VERSION_STRING=$(cat /tmp/version.txt) && \
     . /miniforge3/bin/activate && \
     conda activate py${PYTHON_VERSION_STRING} && \
-    TEMP_DIR=$(mktemp -d) && \
-    echo "Downloading Triton wheels..." && \
-    WORKFLOW_ID=$(curl -s -H "Authorization: token $(cat /run/secrets/github_token)"  \
-      "https://api.github.com/repos/intel/intel-xpu-backend-for-triton/actions/workflows" \
-      | jq -r '.workflows[] | select(.name == "Triton wheels") | .id') && \
-    echo "WORKFLOW_ID=${WORKFLOW_ID}" && \
-    RUN_ID=$(curl -s -H "Authorization: token $(cat /run/secrets/github_token)" \
-
-        "https://api.github.com/repos/intel/intel-xpu-backend-for-triton/actions/workflows/${WORKFLOW_ID}/runs?status=completed&conclusion=success&per_page=1" \
-        | jq -r '.workflow_runs[0].id') && \
-    echo "RUN_ID=${RUN_ID}" && \
-    ARTIFACT_TEMPLATE="wheels-pytorch-py${PYTHON_VERSION}*" && \
-    REGEX_PATTERN=$(echo "$ARTIFACT_TEMPLATE" | sed 's/\*/.*/g') && \
-
-    ARTIFACT_NAME=$(curl -s -H "Authorization: token $(cat /run/secrets/github_token)"  \
-
-        "https://api.github.com/repos/intel/intel-xpu-backend-for-triton/actions/runs/$RUN_ID/artifacts" | \
-        jq -r --arg regex "^${REGEX_PATTERN}$" \
-    '(.artifacts // [])[] | select(.name | test($regex)) | .name') && \
-    echo "ARTIFACT_NAME=${ARTIFACT_NAME}" && \
-
-    LATEST_ARTIFACT_URL=$(curl -s -H "Authorization: token $(cat /run/secrets/github_token)"  \
-        "https://api.github.com/repos/intel/intel-xpu-backend-for-triton/actions/runs/$RUN_ID/artifacts" | \
-        jq -r ".artifacts[] | select(.name == \"$ARTIFACT_NAME\") | .archive_download_url") && \
-    echo "LATEST_ARTIFACT_URL=${LATEST_ARTIFACT_URL}" && \
-    curl -L -H "Authorization: token $(cat /run/secrets/github_token)" -C - \
-
-        --retry 5 \
-        -o $ARTIFACT_NAME.zip $LATEST_ARTIFACT_URL && \
-    unzip -t $ARTIFACT_NAME.zip && \
-    unzip $ARTIFACT_NAME.zip -d $TEMP_DIR && \
-    echo  "Installing Triton wheels..." && \
-    pip install $TEMP_DIR/*.whl --root-user-action=ignore && \
-    rm -rf $TEMP_DIR && \
     # Install vllm from source
-
     cd /root && \
     . /opt/intel/oneapi/setvars.sh && \
     echo "Building vllm/sglang from source ..." && \
@@ -78,13 +43,14 @@ RUN --mount=type=secret,id=github_token \
     echo "cloning ${SG_LANG_BRANCH} from ${SG_LANG_REPO}" && \
     git clone --branch ${SG_LANG_BRANCH} --single-branch ${SG_LANG_REPO} && \
     cd sglang && \
-
     pip install -e "python[all_xpu]" --root-user-action=ignore && \
     # Install required packages for sglang workloads
     pip install msgspec blake3 py-cpuinfo compressed_tensors gguf partial_json_parser einops --root-user-action=ignore && \
     conda install libsqlite=3.48.0 -y && \
     echo ". /miniforge3/bin/activate; conda activate py${PYTHON_VERSION_STRING}; . /opt/intel/oneapi/setvars.sh; cd /root/" >> /root/.bashrc;
 
+
 # Set the default shell to bash
 SHELL ["bash", "-c"]
 CMD ["bash", "-c", "source /root/.bashrc && exec bash"]
+ENV PATH="/miniforge3/envs/py310/bin/python3:${PATH}"
