@@ -55,7 +55,7 @@ jobs:
         timeout-minutes: 60
         run: |
           docker exec -w /root/sglang ci_sglang_xpu \
-            /bin/bash -c "cd /root/sglang/tests/srt && source /opt/intel/oneapi/setvars.sh && /miniforge3/envs/py310/bin/python3 -m run_suite.py --suite per-commit-xpu-intel"
+            /bin/bash -c "cd /root/sglang/test/srt && source /opt/intel/oneapi/setvars.sh && /miniforge3/envs/py310/bin/python3 -m run_suite.py --suite per-commit-xpu-intel"
 
       - name: Run E2E Bfloat16 tests
         timeout-minutes: 20
