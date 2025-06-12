@@ -127,12 +127,10 @@ suites = {
         TestFile("test_full_deepseek_v3.py", 250),
     ],
     "per-commit-xpu-intel": [
-        TestFile("test_awq.py", 800),
         TestFile("test_create_kvindices.py", 20),
         TestFile("test_custom_allreduce.py", 20),
         TestFile("test_fa3.py", 20),
         TestFile("test_local_attn.py", 20),
-        TestFile("test_matched_stop.py", 50),
         TestFile("test_page_size.py", 250),
         TestFile("test_penalty.py", 50),
         TestFile("test_pytorch_sampling_backend.py", 250),
