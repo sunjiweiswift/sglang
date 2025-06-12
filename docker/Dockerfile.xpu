@@ -3,7 +3,7 @@
 
 
 # default base image
-ARG BASE_IMAGE="pytorch_xpu_base:pvc_base"
+ARG BASE_IMAGE="xpu_pvc:base"
 
 FROM $BASE_IMAGE AS base
 USER root
