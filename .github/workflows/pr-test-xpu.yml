@@ -36,12 +36,12 @@ jobs:
           docker run -dt \
             --device /dev/dri/ \
             --name ci_sglang_xpu \
-            sglang_xpu:u2410
+            xpu_sglang:pvc
 
       - name: Install Dependency
         timeout-minutes: 20
         run: |
-          docker exec ci_sglang_xpu bash -c "apt install ninja-build && cd /root/sglang/sgl-kernel && rm -f pyproject.toml && source /opt/intel/oneapi/setvars.sh && CC=icx CXX=icpx /miniforge3/envs/py310/bin/python3 -m pip install -v ."
+          docker exec ci_sglang_xpu bash -c "apt-get update && apt-get install ninja-build && cd /root/sglang/sgl-kernel && rm -f pyproject.toml && source /opt/intel/oneapi/setvars.sh && CC=icx CXX=icpx /miniforge3/envs/py310/bin/python3 -m pip install -v ."
           docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install --upgrade pip
           docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install pytest expecttest ray
 
