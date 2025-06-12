@@ -36,6 +36,7 @@ jobs:
           docker run -dt \
             --device /dev/dri/ \
             --name ci_sglang_xpu \
+            -e HF_TOKEN=$(cat /home/sdp/huggingface_token.txt) \
             xpu_sglang:pvc
 
       - name: Install Dependency
@@ -43,25 +44,27 @@ jobs:
         run: |
           docker exec ci_sglang_xpu bash -c "apt-get update && apt-get install ninja-build && cd /root/sglang/sgl-kernel && rm -f pyproject.toml && source /opt/intel/oneapi/setvars.sh && CC=icx CXX=icpx /miniforge3/envs/py310/bin/python3 -m pip install -v ."
           docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install --upgrade pip
-          docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install pytest expecttest ray
+          docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install pytest expecttest ray huggingface_hub
+          docker exec ci_sglang_xpu /bin/bash -c '/miniforge3/envs/py310/bin/huggingface-cli login --token ${HF_TOKEN} '
+          docker exec ci_sglang_xpu /bin/bash -c "ln -sf /miniforge3/envs/py310/bin/python3 /usr/bin/python3"
 
       - name: Run Sglang Kernel Cases
         timeout-minutes: 20
         run: |
           docker exec -w /root/sglang ci_sglang_xpu \
-            /bin/bash -c "cd /root/sglang/sgl-kernel/tests && source /opt/intel/oneapi/setvars.sh && /miniforge3/envs/py310/bin/python3 -m pytest -v -s test_awq_dequant.py"
+            /bin/bash -c "cd /root/sglang/sgl-kernel/tests && source /opt/intel/oneapi/setvars.sh && python3 -m pytest -v -s test_awq_dequant.py"
 
       - name: Run Sglang UT Cases
         timeout-minutes: 60
         run: |
           docker exec -w /root/sglang ci_sglang_xpu \
-            /bin/bash -c "cd /root/sglang/test/srt && source /opt/intel/oneapi/setvars.sh && ln -sf /miniforge3/envs/py310/bin/python3 /usr/bin/python3 && python3 -m run_suite --suite per-commit-xpu-intel"
+            /bin/bash -c "cd /root/sglang/test/srt && source /opt/intel/oneapi/setvars.sh  && python3 -m run_suite --suite per-commit-xpu-intel"
 
       - name: Run E2E Bfloat16 tests
         timeout-minutes: 20
         run: |
           docker exec -w /root/sglang ci_sglang_xpu \
-            /bin/bash -c "source /opt/intel/oneapi/setvars.sh && /miniforge3/envs/py310/bin/python3 -m sglang.bench_one_batch \
+            /bin/bash -c "source /opt/intel/oneapi/setvars.sh && python3 -m sglang.bench_one_batch \
             --batch-size 1 \
             --input 32 \
             --output 32 \
@@ -74,7 +77,7 @@ jobs:
         timeout-minutes: 20
         run: |
           docker exec -w /root/sglang ci_sglang_xpu \
-            /bin/bash -c "source /opt/intel/oneapi/setvars.sh && /miniforge3/envs/py310/bin/python3 -m sglang.bench_one_batch \
+            /bin/bash -c "source /opt/intel/oneapi/setvars.sh && python3 -m sglang.bench_one_batch \
             --batch-size 1 \
             --input 32 \
             --output 32 \
