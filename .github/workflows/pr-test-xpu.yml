@@ -42,7 +42,7 @@ jobs:
       - name: Install Dependency
         timeout-minutes: 20
         run: |
-          docker exec ci_sglang_xpu bash -c "apt-get update && apt-get install ninja-build && cd /root/sglang/sgl-kernel && mv pyproject_sycl.toml pyproject.toml && source /opt/intel/oneapi/setvars.sh && CC=icx CXX=icpx /miniforge3/envs/py310/bin/python3 -m pip install -v ."
+          docker exec ci_sglang_xpu bash -c "apt-get update && apt-get install ninja-build && cd /root/sglang/sgl-kernel && mv pyproject_sycl.toml pyproject.toml && source /opt/intel/oneapi/setvars.sh && /miniforge3/envs/py310/bin/python3 -m pip install -v ."
           docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install --upgrade pip
           docker exec ci_sglang_xpu /miniforge3/envs/py310/bin/python3 -m pip install pytest expecttest ray huggingface_hub
           docker exec ci_sglang_xpu /bin/bash -c '/miniforge3/envs/py310/bin/huggingface-cli login --token ${HF_TOKEN} '
