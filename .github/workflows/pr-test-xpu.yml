@@ -11,8 +11,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    if: (github.repository == 'sgl-project/sglang' || github.event_name == 'pull_request') &&
-      github.event.pull_request.draft == false
+    if: (github.repository == 'sgl-project/sglang' || github.event_name == 'pull_request') 
     runs-on: pvc-1100
     steps:
       - name: Checkout code
