@@ -21,7 +21,7 @@ ENV PYTHON_VERSION=3.10
 LABEL maintainer="zhaoqiong.zheng@intel.com"
 
 
-# Install Miniforge & PyTorch/Triton & build vllm/SGlang from source
+# Install Miniforge & PyTorch/Triton & build vllm/SGlang from source to.
 RUN --mount=type=secret,id=github_token \
     cd /root && \
     echo ${PYTHON_VERSION} | sed 's/\.//g' > /tmp/version.txt && \
