@@ -39,17 +39,16 @@ from sglang.srt.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from sglang.srt.managers.schedule_batch import global_server_args_dict
-from sglang.srt.model_executor.cuda_graph_runner import get_is_capture_mode
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import (
     default_weight_loader,
     sharded_weight_loader,
 )
 from sglang.srt.models.qwen2_moe import Qwen2MoeMLP, Qwen2MoeSparseMoeBlock
-from sglang.srt.utils import add_prefix, is_cuda, make_layers, set_weight_attrs
+from sglang.srt.utils import add_prefix, is_xpu, make_layers, set_weight_attrs
 
 logger = logging.getLogger(__name__)
-_is_cuda = is_cuda()
+_is_xpu = is_xpu()
 
 import triton
 import triton.language as tl
@@ -238,7 +237,7 @@ class Qwen3GatedDeltaNet(nn.Module):
         self,
         config: Qwen3NextConfig,
         layer_id: int,
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.xpu.Stream] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -327,7 +326,7 @@ class Qwen3GatedDeltaNet(nn.Module):
             eps=self.layer_norm_epsilon,
             group_size=None,
             norm_before_gate=True,
-            device=torch.cuda.current_device(),
+            device=torch.xpu.current_device(),
             dtype=config.torch_dtype,
         )
 
@@ -391,10 +390,10 @@ class Qwen3GatedDeltaNet(nn.Module):
         DUAL_STREAM_TOKEN_THRESHOLD = 1024
         seq_len, _ = hidden_states.shape
         if seq_len < DUAL_STREAM_TOKEN_THRESHOLD:
-            current_stream = torch.cuda.current_stream()
+            current_stream = torch.xpu.current_stream()
             self.alt_stream.wait_stream(current_stream)
             projected_states_qkvz, _ = self.in_proj_qkvz(hidden_states)
-            with torch.cuda.stream(self.alt_stream):
+            with torch.xpu.stream(self.alt_stream):
                 projected_states_ba, _ = self.in_proj_ba(hidden_states)
             current_stream.wait_stream(self.alt_stream)
         else:
@@ -408,13 +407,12 @@ class Qwen3GatedDeltaNet(nn.Module):
         forward_batch: ForwardBatch,
     ):
         seq_len, _ = hidden_states.shape
-        is_cuda_graph = forward_batch.forward_mode.is_cuda_graph()
 
         projected_states_qkvz, projected_states_ba = self._forward_input_proj(
             hidden_states
         )
 
-        if self.num_v_heads // self.num_k_heads in [1, 2, 4] and is_cuda_graph:
+        if False: #self.num_v_heads // self.num_k_heads in [1, 2, 4]:
             mixed_qkv, z, b, a = fused_qkvzba_split_reshape_cat(
                 projected_states_qkvz,
                 projected_states_ba,
@@ -486,7 +484,7 @@ class Qwen3HybridLinearDecoderLayer(nn.Module):
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.xpu.Stream] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -571,7 +569,7 @@ class Qwen3HybridAttentionDecoderLayer(nn.Module):
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.xpu.Stream] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -692,12 +690,12 @@ class Qwen3HybridAttentionDecoderLayer(nn.Module):
         self, q: torch.Tensor, k: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # overlap qk norm
-        if self.alt_stream is not None and get_is_capture_mode():
-            current_stream = torch.cuda.current_stream()
+        if False: #self.alt_stream is not None and get_is_capture_mode():
+            current_stream = torch.xpu.current_stream()
             self.alt_stream.wait_stream(current_stream)
             q_by_head = q.reshape(-1, self.head_dim)
             q_by_head = self.q_norm(q_by_head)
-            with torch.cuda.stream(self.alt_stream):
+            with torch.xpu.stream(self.alt_stream):
                 k_by_head = k.reshape(-1, self.head_dim)
                 k_by_head = self.k_norm(k_by_head)
             current_stream.wait_stream(self.alt_stream)
@@ -794,7 +792,7 @@ class Qwen3NextModel(nn.Module):
         super().__init__()
         self.config = config
 
-        alt_stream = torch.cuda.Stream() if _is_cuda else None
+        alt_stream = torch.xpu.Stream() if _is_xpu else None
 
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
@@ -915,8 +913,8 @@ class Qwen3NextForCausalLM(nn.Module):
         del self.lm_head.weight
         self.model.embed_tokens.weight = embed
         self.lm_head.weight = head
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        torch.xpu.empty_cache()
+        torch.xpu.synchronize()
 
     def load_weights(
         self, weights: Iterable[Tuple[str, torch.Tensor]], is_mtp: bool = False

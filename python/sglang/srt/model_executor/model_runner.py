@@ -613,8 +613,6 @@ class ModelRunner:
             backend = "hccl"
 
         before_avail_memory = get_available_gpu_memory(self.device, self.gpu_id)
-        if not self.server_args.enable_p2p_check:
-            monkey_patch_p2p_access_check()
 
         if self.server_args.dist_init_addr:
             dist_init_method = f"tcp://{self.server_args.dist_init_addr}"
@@ -1697,15 +1695,12 @@ class ModelRunner:
             assert (
                 self.is_hybrid_gdn
             ), "hybrid_linear_attn backend can only be used with hybrid GDN models."
-            from sglang.srt.layers.attention.flashattention_backend import (
-                FlashAttentionBackend,
-            )
             from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
                 HybridLinearAttnBackend,
                 MambaAttnBackend,
             )
-
-            full_attn_backend = FlashAttentionBackend(self)
+            from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
+            full_attn_backend = TorchNativeAttnBackend(self)
             linear_attn_backend = MambaAttnBackend(self)
             full_attn_layers = self.model_config.hf_config.full_attention_layer_ids
             return HybridLinearAttnBackend(

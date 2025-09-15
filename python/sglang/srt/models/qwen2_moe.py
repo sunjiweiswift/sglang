@@ -65,11 +65,11 @@ from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.two_batch_overlap import model_forward_maybe_tbo
-from sglang.srt.utils import add_prefix, is_cuda, make_layers
+from sglang.srt.utils import add_prefix, is_xpu, make_layers
 
 logger = logging.getLogger(__name__)
 
-_is_cuda = is_cuda()
+_is_xpu = is_xpu()
 
 
 class Qwen2MoeMLP(nn.Module):
@@ -124,7 +124,7 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         layer_id: int,
         config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.xpu.Stream] = None,
         prefix: str = "",
     ):
         super().__init__()
@@ -192,11 +192,11 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        current_stream = torch.cuda.current_stream()
+        current_stream = torch.xpu.current_stream()
         self.alt_stream.wait_stream(current_stream)
         shared_output = self._forward_shared_experts(hidden_states)
 
-        with torch.cuda.stream(self.alt_stream):
+        with torch.xpu.stream(self.alt_stream):
             router_output = self._forward_router_experts(hidden_states)
 
         current_stream.wait_stream(self.alt_stream)
@@ -336,7 +336,7 @@ class Qwen2MoeDecoderLayer(nn.Module):
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.xpu.Stream] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -449,7 +449,7 @@ class Qwen2MoeModel(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
         decoder_layer_type: type[nn.Module] = Qwen2MoeDecoderLayer,
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.xpu.Stream] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -566,7 +566,7 @@ class Qwen2MoeForCausalLM(nn.Module):
         self.pp_group = get_pp_group()
         self.config = config
         self.quant_config = quant_config
-        alt_stream = torch.cuda.Stream() if _is_cuda else None
+        alt_stream = torch.xpu.Stream() if _is_xpu else None
         self.model = Qwen2MoeModel(
             config,
             quant_config,

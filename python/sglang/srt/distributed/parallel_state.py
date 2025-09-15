@@ -277,10 +277,6 @@ class GroupCoordinator:
         self.use_npu_communicator = use_npu_communicator
         self.use_message_queue_broadcaster = use_message_queue_broadcaster
 
-        # lazy import to avoid documentation build error
-        from sglang.srt.distributed.device_communicators.custom_all_reduce import (
-            CustomAllreduce,
-        )
         from sglang.srt.distributed.device_communicators.pymscclpp import (
             PyMscclppCommunicator,
         )
@@ -629,7 +625,7 @@ class GroupCoordinator:
 
     def _all_gather_into_tensor(self, output: torch.Tensor, input: torch.Tensor):
         pynccl_comm = self.pynccl_comm
-        if pynccl_comm is not None and not pynccl_comm.disabled:
+        if False: #pynccl_comm is not None and not pynccl_comm.disabled:
             pynccl_comm.all_gather(output, input)
         else:
             torch.distributed.all_gather_into_tensor(
@@ -637,7 +633,7 @@ class GroupCoordinator:
             )
 
     def all_gather_into_tensor(self, output: torch.Tensor, input: torch.Tensor):
-        if _is_npu or not supports_custom_op():
+        if True: #_is_npu or not supports_custom_op():
             self._all_gather_into_tensor(output, input)
         else:
             torch.ops.sglang.reg_all_gather_into_tensor(
