@@ -129,6 +129,7 @@ from sglang.srt.utils import (
     monkey_patch_p2p_access_check,
     monkey_patch_vllm_gguf_config,
     set_cuda_arch,
+    xpu_has_xmx_support,
 )
 from sglang.srt.weight_sync.tensor_bucket import (
     FlattenedTensorBucket,
@@ -138,6 +139,7 @@ from sglang.srt.weight_sync.tensor_bucket import (
 _is_hip = is_hip()
 _is_npu = is_npu()
 _is_cpu_amx_available = cpu_has_amx_support()
+_is_xpu_xmx_available = xpu_has_xmx_support()
 
 # Use a small KV cache pool size for tests in CI
 SGLANG_CI_SMALL_KV_SIZE = os.getenv("SGLANG_CI_SMALL_KV_SIZE", None)
@@ -509,6 +511,7 @@ class ModelRunner:
                     "cutlass_mla",
                     "trtllm_mla",
                     "ascend",
+                    "xpu",
                 ]:
                     logger.info(
                         f"MLA optimization is turned on. Use {server_args.attention_backend} backend."
@@ -1706,6 +1709,14 @@ class ModelRunner:
             return HybridLinearAttnBackend(
                 full_attn_backend, linear_attn_backend, full_attn_layers
             )
+        elif backend_str == "xpu":
+            assert _is_xpu_xmx_available, (
+                "XPUAttention Backend requires Xe2+ hardware. "
+                "Please use `--attention-backend triton`."
+            )
+            from sglang.srt.layers.attention.xpu_backend import XPUAttentionBackend
+
+            return XPUAttentionBackend(self)
         else:
             raise ValueError(f"Invalid attention backend: {backend_str}")
 
