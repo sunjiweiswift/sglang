@@ -246,6 +246,12 @@ def use_intel_amx_backend(layer):
     return getattr(layer, "use_intel_amx_backend", False)
 
 
+def xpu_has_xmx_support():
+    if is_xpu():
+        return torch.xpu.get_device_properties().has_fp64
+    return False
+
+
 def is_flashinfer_available():
     """
     Check whether flashinfer is available.
