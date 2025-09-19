@@ -101,13 +101,6 @@ class RotaryEmbedding(CustomOp):
         if not _is_cuda:
             cache = cache.to(dtype)
 
-        if (
-            not (_is_cuda or _is_npu) or self.head_size not in [64, 128, 256, 512]
-        ) and not (_is_cpu and _is_cpu_amx_available):
-            from vllm._custom_ops import rotary_embedding
-
-            self.vllm_rotary_embedding = rotary_embedding
-
         self.cos_sin_cache: torch.Tensor
         self.register_buffer("cos_sin_cache", cache, persistent=False)
 
@@ -125,6 +118,7 @@ class RotaryEmbedding(CustomOp):
         )
         return inv_freq
 
+    @torch.compile
     def _compute_cos_sin_cache(self) -> torch.Tensor:
         """Compute the cos and sin cache."""
         inv_freq = self._compute_inv_freq(self.base)
@@ -136,6 +130,7 @@ class RotaryEmbedding(CustomOp):
         cache = torch.cat((cos, sin), dim=-1)
         return cache
 
+    @torch.compile
     def forward_native(
         self,
         positions: torch.Tensor,
@@ -148,6 +143,7 @@ class RotaryEmbedding(CustomOp):
             positions = positions + offsets
         positions = positions.flatten()
         num_tokens = positions.shape[0]
+        self.cos_sin_cache = self.cos_sin_cache.to(query.device, dtype=query.dtype)
         cos_sin = self.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
 

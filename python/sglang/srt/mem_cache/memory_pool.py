@@ -438,6 +438,7 @@ class MHATokenToKVPool(KVCache):
         self.alt_stream = self.device_module.Stream() if _is_cuda else None
         self._finalize_allocation_log(size)
 
+    @torch.compile
     def _create_buffers(self):
         with self.memory_saver_adapter.region(GPU_MEMORY_TYPE_KV_CACHE):
             with (
