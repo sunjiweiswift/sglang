@@ -488,19 +488,18 @@ class XPUAttentionBackend(AttentionBackend):
         )
         window_size = (layer.sliding_window_size, 0) if is_hybrid_swa else (-1, -1)
 
-        # currently no FP8 KV cache supported
         k_descale, v_descale = None, None
-        # # only use kv scaling if: 1) fp8 kv is explicitly enabled, 2) RadixAttention
-        # # has corresponding quantization method so that layer.k_scale is not None,
-        # # 3) layer.head_dim <= 256 since fa3 kernel require fp16 and bf16 data type in this case.
-        # if self.kv_cache_dtype_str != "auto" and layer.head_dim <= 256:
-        #     if layer.k_scale is not None:
-        #         descale_shape = (forward_batch.batch_size, layer.tp_k_head_num)
-        #         k_descale = layer.k_scale.expand(descale_shape)
-        #         v_descale = layer.v_scale.expand(descale_shape)
-        #     q = q.to(self.kv_cache_dtype)
-        #     q_rope = q_rope.to(self.kv_cache_dtype) if q_rope is not None else None
-        #     k_rope = k_rope.to(self.kv_cache_dtype) if k_rope is not None else None
+        # only use kv scaling if: 1) fp8 kv is explicitly enabled, 2) RadixAttention
+        # has corresponding quantization method so that layer.k_scale is not None,
+        # 3) layer.head_dim <= 256 since fa3 kernel require fp16 and bf16 data type in this case.
+        if self.kv_cache_dtype_str != "auto" and layer.head_dim <= 256:
+            if layer.k_scale is not None:
+                descale_shape = (forward_batch.batch_size, layer.tp_k_head_num)
+                k_descale = layer.k_scale.expand(descale_shape)
+                v_descale = layer.v_scale.expand(descale_shape)
+            q = q.to(self.kv_cache_dtype)
+            q_rope = q_rope.to(self.kv_cache_dtype) if q_rope is not None else None
+            k_rope = k_rope.to(self.kv_cache_dtype) if k_rope is not None else None
         causal = not layer.is_cross_attention
 
         # Check if we should use local attention
